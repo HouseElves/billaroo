@@ -1,0 +1,14 @@
+# Baseline scenario for synthetic_subscriber_billing.
+# Small scale suitable for testing and demo runs.
+
+seed: 42
+months: 12
+starting_accounts: 20
+
+prob_cancel: 0.04
+prob_upgrade: 0.03
+prob_downgrade: 0.02
+prob_feature_add: 0.05
+prob_feature_remove: 0.03
+prob_reactivate: 0.02
+prob_payment_failure: 0.05

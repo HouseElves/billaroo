@@ -1,0 +1,14 @@
+[run]
+branch = True
+source =
+    synthetic_billing
+    synthetic_billing_dbt
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 2
+fail_under = 90
+omit =
+    */test/*
+    */__main__.py
