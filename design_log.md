@@ -659,3 +659,50 @@ gate is visible in every diff.
   the primary correctness signal.
 - A test slice is dominated by an external dependency whose contract
   cannot be faithfully mocked.
+
+### D28. Deterministic ID Derivation: SHA-256 Truncated To 16 Hex Chars
+
+IDs are derived as the first 16 lowercase hex characters of the SHA-256
+digest of the canonical fields joined with `:`. By convention the first
+field is an entity-type prefix (e.g. `account`, `subscriber`,
+`subscription`, `invoice`) so IDs from different entity families cannot
+collide. String fields must be non-blank and must not contain `:`;
+integer ordinal fields must be non-negative; `bool` is rejected
+explicitly because `isinstance(True, int)` is True in Python.
+
+#### Rationale
+
+Determinism (D2) requires that IDs be a function of their inputs, not
+of generation order. SHA-256 ships with the standard library, has no
+licensing weight, and 64 bits of digest (16 hex chars) sit well below
+the birthday bound for any scenario this simulator will plausibly
+run — order of 10^8 distinct IDs per entity type before collision
+probability becomes interesting. The `:` separator is plain ASCII,
+easy to grep for, and obvious in test failure output. The leading
+entity-type prefix is the cheapest possible namespace and keeps the
+primitive a single function rather than one per entity.
+
+#### Alternatives Considered
+
+- UUID4 — not deterministic from inputs; would break D2.
+- UUIDv5 — deterministic, but ties the project to RFC 4122 namespace
+  ceremony for no operational benefit at this scale.
+- Full 64-character SHA-256 digest — collision-safer, but harder to
+  scan in test output for no real-world gain at our scale.
+- Numeric ordinals end-to-end — easy to read, but couple every ID to
+  generation order rather than to the inputs that produced it, which
+  makes cross-run diffs noisier than they need to be.
+- Per-entity deriver functions (`derive_account_id`, ...) in the
+  contract module — postponed until the corresponding entity slices
+  land, per D3.
+
+#### Revisit When
+
+- A scenario grows large enough that birthday-bound collisions on a
+  16-hex space become plausible (rough threshold: ~10^8 distinct IDs
+  per entity type).
+- A regulator or downstream consumer requires a specific ID format
+  (UUID, ULID, snowflake).
+- Per-entity deriver helpers accumulate enough repeated structure
+  (entity prefix + canonical field list) that a tiny registry earns
+  its place over the bare `derive_id` primitive.

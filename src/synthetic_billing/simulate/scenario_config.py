@@ -80,13 +80,17 @@ def _validate_probability(name: str, value: object) -> float:
         raise TypeError(f"{name} must be a number, not bool")
     if not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be a number, got {type(value).__name__}")
-    if not (0.0 <= value <= 1.0):
+    if not 0.0 <= value <= 1.0:
         raise ValueError(f"{name} must be between 0 and 1, got {value}")
     return float(value)
 
 
+# ScenarioConfig is intentionally flat: one field per scenario knob, no
+# sub-objects.  This follows D17 (flat YAML mapping) and D3 (abstractions
+# earn their existence).  The attribute count and validation branch count
+# grow with the knob surface, which is expected.
 @dataclasses.dataclass(frozen=True)
-class ScenarioConfig:
+class ScenarioConfig:  # pylint: disable=too-many-instance-attributes
     """Immutable scenario configuration.
 
     All probabilities are plain floats in [0, 1].
@@ -115,7 +119,7 @@ class ScenarioConfig:
     duplicate_invoice_line_month: Optional[int] = None
     duplicate_invoice_line_probability: Optional[float] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # pylint: disable=too-many-branches
         # --- seed ---
         if isinstance(self.seed, bool):
             raise TypeError("seed must be int, not bool")
@@ -158,7 +162,7 @@ class ScenarioConfig:
             if val is not None:
                 if not isinstance(val, int) or isinstance(val, bool):
                     raise TypeError(f"{name} must be int or None")
-                if not (1 <= val <= self.months):
+                if not 1 <= val <= self.months:
                     raise ValueError(
                         f"{name} must be between 1 and months ({self.months}), got {val}"
                     )

@@ -34,6 +34,7 @@ class RandomStream:
 
     @property
     def seed(self) -> int:
+        """The seed this stream was initialized with."""
         return self._seed
 
     def random(self) -> float:
