@@ -771,3 +771,82 @@ keep their inline helpers.
   validation patterns that inline checks become harder to scan than a
   declarative check-tuple list would be.  At that point the shared
   validation vocabulary lands as its own design decision.
+
+### D30. Shared Validation Vocabulary Lands Before Subscription Contracts
+
+The project introduces `synthetic_billing/_validation.py` and
+`synthetic_billing/exceptions.py` as a narrow shared validation
+vocabulary, lifted and renamed from the NYC Cabs reference module.
+The vocabulary defines:
+
+- `CheckTuple` and `CheckSpec` type aliases for validation primitives.
+- A free function `raise_on_violations(checks, message)` that raises
+  `InvalidRequestError` when any check has failed.
+- A `_Validated` mix-in providing `create_validated`, `validate`,
+  `is_valid`, and `validity_check` on top of a subclass-declared
+  `_type_check_specs` tuple and an optional `_structural_checks`
+  override.
+
+The exception hierarchy is deliberately shallow:
+`SyntheticBillingError` (root) → `ValidationError` →
+`InvalidRequestError` (with a `violations` attribute).
+
+#### Rationale
+
+Account, subscriber, and catalog contracts have repeated validation
+helper pressure, and subscription contracts will repeat the same
+shape again. The project introduces a narrow validation vocabulary
+before the next contract slice to prevent drift.
+
+The vocabulary is **vocabulary, not framework** (D29). It produces
+check tuples and consumes them at a single raise site. It does not
+own domain rules: catalog membership, billing semantics, lifecycle
+policy, or any other project-specific decision lives in the calling
+module. The mix-in is intentionally tiny; it could be replaced by
+explicit calls to `raise_on_violations` without changing project
+semantics.
+
+Existing contracts (D29's static population vocabulary, plus the
+catalog) are **not** retrofitted in this slice. Each contract's
+adoption of `_Validated` is a separate decision made when the
+contract is next opened. This keeps the slice small and prevents
+the vocabulary itself from quietly becoming load-bearing before its
+shape has been exercised by a real second consumer.
+
+#### Module Placement
+
+The two modules live at the top of the `synthetic_billing` import
+package rather than under `contracts/` because they are consumed
+across multiple subpackages (contracts and model today; actions and
+simulate later). The leading underscore on `_validation.py` flags it
+as a project-internal module — public to the package, not to library
+consumers.
+
+#### Alternatives Considered
+
+- Placing the vocabulary under `contracts/` — would imply it is only
+  for contracts, which is false; action and simulate code will use it
+  too.
+- Retrofitting accounts, subscribers, and catalog contracts in this
+  slice — would couple a vocabulary introduction to three concurrent
+  refactors, violating "implement the smallest boring thing" and
+  blocking review of the vocabulary on its own merits.
+- A full validation framework (declarative schema, error
+  serialization, structured logging) — explicitly rejected. The
+  project is not in the business of validation frameworks. If a
+  richer pattern is needed later, that is a new decision, not a
+  silent extension of this one.
+
+#### Revisit When
+
+- Two or three concrete contracts have adopted `_Validated` and
+  surfaced common patterns that warrant promotion into the vocabulary
+  itself (e.g. a shared `non_blank_string_check` helper).
+- An invoice, payment, or event contract introduces a new validation
+  shape (non-uniform violation payloads, hierarchical validation,
+  async/external checks) that the current vocabulary cannot express
+  cleanly.
+- A downstream consumer (API surface, dbt validation reporter) needs
+  a stable serialization of `InvalidRequestError.violations`, at
+  which point the violation shape becomes part of the public
+  contract.
