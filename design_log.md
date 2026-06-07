@@ -706,3 +706,68 @@ primitive a single function rather than one per entity.
 - Per-entity deriver helpers accumulate enough repeated structure
   (entity prefix + canonical field list) that a tiny registry earns
   its place over the bare `derive_id` primitive.
+
+### D29. Account And Subscriber Contracts Establish Static Population Vocabulary
+
+The account and subscriber contracts define the *static population
+vocabulary* of the simulator: the entities that exist before any action
+chain fires, together with their stable structural attributes — IDs,
+ordinals, statuses, plan assignments, billing cycle days, region codes.
+This vocabulary is deliberately distinct from the *dynamic vocabulary*
+(lifecycle events, invoices, payments, action results) that subsequent
+slices will introduce.
+
+#### Rationale
+
+Splitting the contract surface by tempo — static once-set fields versus
+dynamic event and transaction records — keeps each contract module
+narrow.  Static-population objects can rely on closed value sets
+(`ACCOUNT_STATUSES`, `Catalog`-validated `plan_code`) and small fixed
+ranges (`billing_cycle_day` in 1..28).  Dynamic contracts will need
+open sets, version-aware schemas, and references to action chain
+results; keeping those concerns on the other side of the contract
+surface prevents event-versioning bleed into the population code.
+
+The four-step ordering inside `build_subscriber`
+(derive id → construct → semantic-validate against catalog → return)
+makes the structural/semantic boundary from design constitution rule 8
+visible in code: the contract `__post_init__` enforces the structural
+shape, and only a structurally-valid `Subscriber` is then checked
+against catalog membership.
+
+#### Pressure Building Toward A Shared Validation Vocabulary
+
+Three contract modules now duplicate small validation helpers:
+non-blank-string checks, bool-rejected ordinal checks, type-then-range
+checks for small numeric fields.  Per D3 the helpers stay private and
+duplicated for now, but the recurrence is real.
+
+The intended future shape is a skinny, vocabulary-only validation
+module — check tuples produced by domain code, consumed by a single
+`raise_on_violations(...)` entry point.  We are *not* in the business
+of building a validation framework; the goal is a shared declarative
+vocabulary, not policy.  Until extraction earns its place, contracts
+keep their inline helpers.
+
+#### Alternatives Considered
+
+- A single combined `population_contracts.py` — would couple accounts
+  and subscribers, contradicting the narrow-module convention and the
+  predeclared layout (D23, D26).
+- Embedding plan_code catalog validation in
+  `subscriber_contracts.__post_init__` — would force the contract to
+  depend on `Catalog`, mixing structural and semantic validation
+  against D15.
+- Extracting validation helpers now to a shared `_validation.py` —
+  premature per D3; three call sites is suggestive but not yet
+  decisive, and the future shape is known to differ from the current
+  ad-hoc helpers.
+
+#### Revisit When
+
+- A fourth contract module needs the same `_validate_non_blank` /
+  `_validate_ordinal` helpers, triggering helper extraction per D3.
+- Event, invoice, or payment contracts introduce enough additional
+  validation patterns that inline checks become harder to scan than a
+  declarative check-tuple list would be.  At that point the shared
+  validation vocabulary lands as its own design decision.
