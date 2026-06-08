@@ -850,3 +850,62 @@ consumers.
   a stable serialization of `InvalidRequestError.violations`, at
   which point the violation shape becomes part of the public
   contract.
+
+### D31. Subscription Contract Proves The Shared Validation Vocabulary
+
+The subscription contract is the first domain contract built on the
+shared ``_Validated`` mix-in (D30).  A ``Subscription`` is an
+effective-dated entitlement linking a subscriber to a catalog item
+(plan or feature) for a range of simulation months.
+
+#### What The POC Proves
+
+- ``_type_check_specs`` handles the seven-field constructor type
+  checking declaratively, including the ``int | None`` end_month
+  pattern (``(int, type(None))`` as the required type with ``bool``
+  excluded).
+- ``_structural_checks`` collects all value, range, and cross-field
+  violations into a single ``InvalidRequestError`` rather than
+  failing at the first one.
+- ``create_validated`` sequences type checks → construction →
+  structural validation cleanly, matching the four-step builder
+  pattern (derive → construct → semantic-validate → return) already
+  established in the model layer.
+- The contract stays pure — no catalog imports, no model imports, no
+  I/O — proving that ``_Validated`` does not pull in unwanted
+  dependencies.
+
+#### Structural vs. Semantic Boundary
+
+The ``Subscription`` contract validates shape only:
+
+- Non-blank string identifiers and codes.
+- ``item_type`` membership in ``SUBSCRIPTION_ITEM_TYPES``.
+- ``start_month >= 1``; ``end_month >= start_month`` when present.
+- ``subscription_status`` membership in ``SUBSCRIPTION_STATUSES``.
+- Active subscriptions must have ``end_month is None``; ended
+  subscriptions must have ``end_month is not None``.
+
+Catalog membership (plan_code exists, feature_code exists) and
+compatibility (feature is allowed on plan) live in the model
+builders ``build_plan_subscription`` and
+``build_feature_subscription``, consistent with D15.
+
+#### Retrofit Posture
+
+Existing account, subscriber, and catalog contracts are **not**
+retrofitted in this slice.  The retrofit is the next slice, gated on
+this POC passing all three project gates (tests, coverage, lint).
+This ordering ensures the vocabulary is proven on a real domain
+object before being applied retroactively.
+
+#### Revisit When
+
+- The retrofit slice lands and surfaces any ergonomic friction in the
+  ``_Validated`` protocol (e.g. verbose ``_structural_checks``
+  methods, awkward ``create_validated`` positional-arg ordering).
+- A contract needs multi-phase validation (e.g. structural checks
+  that depend on type-check results) that the current single-pass
+  ``_structural_checks`` cannot express.
+- Event or invoice contracts introduce union-typed fields beyond
+  ``int | None`` that stress the ``CheckSpec`` format.
