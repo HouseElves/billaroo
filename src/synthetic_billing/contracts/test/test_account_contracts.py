@@ -4,30 +4,55 @@ import dataclasses
 
 import pytest
 
+from synthetic_billing._validation import _Validated
 from synthetic_billing.contracts.account_contracts import (
     ACCOUNT_STATUSES,
     Account,
 )
+from synthetic_billing.exceptions import InvalidRequestError
 
 
-def _account(**overrides) -> Account:
-    """Build a valid Account with defaults, applying *overrides*."""
-    defaults = {
-        "account_id": "abc123",
-        "account_ordinal": 0,
-        "billing_cycle_day": 15,
-        "region_code": "US-WEST",
-        "account_status": "active",
-    }
-    return Account(**{**defaults, **overrides})
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+_VALID_FIELDS = {
+    "account_id": "abc123",
+    "account_ordinal": 0,
+    "billing_cycle_day": 15,
+    "region_code": "US-WEST",
+    "account_status": "active",
+}
+
+
+def _make(**overrides) -> Account:
+    """Build a valid Account via create_validated, applying *overrides*."""
+    kw = {**_VALID_FIELDS, **overrides}
+    return Account.create_validated(
+        kw["account_id"],
+        kw["account_ordinal"],
+        kw["billing_cycle_day"],
+        kw["region_code"],
+        kw["account_status"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Happy path & _Validated protocol
+# ---------------------------------------------------------------------------
 
 
 class TestAccountHappyPath:
     """Account stores validated fields in a frozen dataclass."""
 
+    def test_is_validated_subclass(self) -> None:
+        """Account inherits from _Validated."""
+        assert issubclass(Account, _Validated)
+
     def test_constructs_with_defaults(self) -> None:
         """All fields are stored unchanged."""
-        acct = _account()
+        acct = _make()
         assert acct.account_id == "abc123"
         assert acct.account_ordinal == 0
         assert acct.billing_cycle_day == 15
@@ -37,121 +62,175 @@ class TestAccountHappyPath:
     def test_all_statuses_accepted(self) -> None:
         """Every status in ACCOUNT_STATUSES is valid."""
         for status in ACCOUNT_STATUSES:
-            acct = _account(account_status=status)
-            assert acct.account_status == status
+            assert _make(account_status=status).account_status == status
 
     def test_billing_cycle_day_lower_bound(self) -> None:
         """Day 1 is the minimum valid billing cycle day."""
-        acct = _account(billing_cycle_day=1)
-        assert acct.billing_cycle_day == 1
+        assert _make(billing_cycle_day=1).billing_cycle_day == 1
 
     def test_billing_cycle_day_upper_bound(self) -> None:
         """Day 28 is the maximum valid billing cycle day."""
-        acct = _account(billing_cycle_day=28)
-        assert acct.billing_cycle_day == 28
+        assert _make(billing_cycle_day=28).billing_cycle_day == 28
 
     def test_is_frozen(self) -> None:
         """Mutation raises FrozenInstanceError."""
-        acct = _account()
+        acct = _make()
         with pytest.raises(dataclasses.FrozenInstanceError):
             acct.account_status = "closed"  # type: ignore[misc]
 
+    def test_validate_happy_path(self) -> None:
+        """validate() on a valid account returns None."""
+        assert _make().validate() is None
 
-class TestAccountIdValidation:
-    """Account rejects invalid account_id values."""
+    def test_is_valid_true(self) -> None:
+        """is_valid() is True for a structurally valid account."""
+        assert _make().is_valid() is True
 
-    def test_rejects_non_string_id(self) -> None:
-        """An integer account_id is not a string."""
-        with pytest.raises(TypeError, match="account_id"):
-            _account(account_id=42)
-
-    def test_rejects_blank_id(self) -> None:
-        """A whitespace-only account_id is blank."""
-        with pytest.raises(ValueError, match="account_id"):
-            _account(account_id="   ")
-
-    def test_rejects_empty_id(self) -> None:
-        """An empty account_id is blank."""
-        with pytest.raises(ValueError, match="account_id"):
-            _account(account_id="")
+    def test_validity_check_true(self) -> None:
+        """validity_check returns (True, name, instance) when valid."""
+        acct = _make()
+        passed, name, obj = acct.validity_check("acct")
+        assert passed is True
+        assert name == "acct"
+        assert obj is acct
 
 
-class TestAccountOrdinalValidation:
-    """Account rejects invalid account_ordinal values."""
-
-    def test_rejects_bool_ordinal(self) -> None:
-        """Bool is rejected despite being an int subclass."""
-        with pytest.raises(TypeError, match="account_ordinal"):
-            _account(account_ordinal=True)
-
-    def test_rejects_float_ordinal(self) -> None:
-        """Float is not a valid ordinal."""
-        with pytest.raises(TypeError, match="account_ordinal"):
-            _account(account_ordinal=1.0)
-
-    def test_rejects_negative_ordinal(self) -> None:
-        """Negative ordinals are invalid."""
-        with pytest.raises(ValueError, match="account_ordinal"):
-            _account(account_ordinal=-1)
+# ---------------------------------------------------------------------------
+# Type-check rejections
+# ---------------------------------------------------------------------------
 
 
-class TestBillingCycleDayValidation:
-    """Account rejects invalid billing_cycle_day values."""
+class TestAccountTypeChecks:
+    """create_validated rejects wrong constructor types."""
 
-    def test_rejects_bool(self) -> None:
-        """Bool is rejected despite being an int subclass."""
-        with pytest.raises(TypeError, match="billing_cycle_day"):
-            _account(billing_cycle_day=True)
+    def test_non_string_account_id(self) -> None:
+        """An integer account_id is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_id=42)
+        assert ("account_id", 42) in exc_info.value.violations
 
-    def test_rejects_float(self) -> None:
-        """Float is not a valid billing cycle day."""
-        with pytest.raises(TypeError, match="billing_cycle_day"):
-            _account(billing_cycle_day=15.0)
+    def test_bool_ordinal(self) -> None:
+        """Bool ordinal is rejected despite being an int subclass."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_ordinal=True)
+        assert ("account_ordinal", True) in exc_info.value.violations
 
-    def test_rejects_zero(self) -> None:
+    def test_float_ordinal(self) -> None:
+        """Float ordinal is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_ordinal=1.0)
+        assert ("account_ordinal", 1.0) in exc_info.value.violations
+
+    def test_bool_billing_cycle_day(self) -> None:
+        """Bool billing_cycle_day is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(billing_cycle_day=True)
+        assert ("billing_cycle_day", True) in exc_info.value.violations
+
+    def test_float_billing_cycle_day(self) -> None:
+        """Float billing_cycle_day is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(billing_cycle_day=15.0)
+        assert ("billing_cycle_day", 15.0) in exc_info.value.violations
+
+    def test_non_string_region_code(self) -> None:
+        """An integer region_code is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(region_code=42)
+        assert ("region_code", 42) in exc_info.value.violations
+
+    def test_non_string_status(self) -> None:
+        """An integer account_status is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_status=42)
+        assert ("account_status", 42) in exc_info.value.violations
+
+
+# ---------------------------------------------------------------------------
+# Structural-check rejections
+# ---------------------------------------------------------------------------
+
+
+class TestAccountStructuralChecks:
+    """Structural validation catches value, range, and vocabulary errors."""
+
+    def test_blank_account_id(self) -> None:
+        """A whitespace-only account_id is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_id="   ")
+        assert any(f == "account_id" for f, _ in exc_info.value.violations)
+
+    def test_negative_ordinal(self) -> None:
+        """A negative account_ordinal is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_ordinal=-1)
+        assert any(
+            f == "account_ordinal" for f, _ in exc_info.value.violations
+        )
+
+    def test_billing_cycle_day_zero(self) -> None:
         """Day 0 is below the valid range."""
-        with pytest.raises(ValueError, match="billing_cycle_day"):
-            _account(billing_cycle_day=0)
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(billing_cycle_day=0)
+        assert any(
+            f == "billing_cycle_day" for f, _ in exc_info.value.violations
+        )
 
-    def test_rejects_29(self) -> None:
+    def test_billing_cycle_day_29(self) -> None:
         """Day 29 is above the valid range."""
-        with pytest.raises(ValueError, match="billing_cycle_day"):
-            _account(billing_cycle_day=29)
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(billing_cycle_day=29)
+        assert any(
+            f == "billing_cycle_day" for f, _ in exc_info.value.violations
+        )
 
-    def test_rejects_negative(self) -> None:
-        """Negative days are invalid."""
-        with pytest.raises(ValueError, match="billing_cycle_day"):
-            _account(billing_cycle_day=-1)
+    def test_blank_region_code(self) -> None:
+        """An empty region_code is rejected."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(region_code="")
+        assert any(f == "region_code" for f, _ in exc_info.value.violations)
 
-
-class TestRegionCodeValidation:
-    """Account rejects invalid region_code values."""
-
-    def test_rejects_non_string(self) -> None:
-        """An integer region_code is not a string."""
-        with pytest.raises(TypeError, match="region_code"):
-            _account(region_code=42)
-
-    def test_rejects_blank(self) -> None:
-        """An empty region_code is blank."""
-        with pytest.raises(ValueError, match="region_code"):
-            _account(region_code="")
-
-
-class TestAccountStatusValidation:
-    """Account rejects invalid account_status values."""
-
-    def test_rejects_non_string(self) -> None:
-        """An integer account_status is not a string."""
-        with pytest.raises(TypeError, match="account_status"):
-            _account(account_status=42)
-
-    def test_rejects_unknown_status(self) -> None:
+    def test_unknown_status(self) -> None:
         """A string not in ACCOUNT_STATUSES is rejected."""
-        with pytest.raises(ValueError, match="account_status"):
-            _account(account_status="unknown")
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(account_status="unknown")
+        assert any(
+            f == "account_status" for f, _ in exc_info.value.violations
+        )
 
-    def test_statuses_constant_is_tuple(self) -> None:
-        """ACCOUNT_STATUSES is a tuple of at least one entry."""
+    def test_multiple_violations_collected(self) -> None:
+        """Multiple structural failures are collected into one error."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            _make(
+                account_id="",
+                account_ordinal=-1,
+                billing_cycle_day=0,
+                region_code="",
+                account_status="unknown",
+            )
+        field_names = {f for f, _ in exc_info.value.violations}
+        assert "account_id" in field_names
+        assert "account_ordinal" in field_names
+        assert "billing_cycle_day" in field_names
+        assert "region_code" in field_names
+        assert "account_status" in field_names
+
+    def test_is_valid_false(self) -> None:
+        """Direct construction of an invalid account yields is_valid()=False."""
+        acct = Account(
+            account_id="x", account_ordinal=0, billing_cycle_day=15,
+            region_code="US", account_status="unknown",
+        )
+        assert acct.is_valid() is False
+
+
+class TestAccountStatusesConstant:
+    """ACCOUNT_STATUSES is a non-empty tuple of strings."""
+
+    def test_is_tuple(self) -> None:
+        """ACCOUNT_STATUSES is a tuple."""
         assert isinstance(ACCOUNT_STATUSES, tuple)
+
+    def test_non_empty(self) -> None:
+        """ACCOUNT_STATUSES contains at least one entry."""
         assert len(ACCOUNT_STATUSES) >= 1

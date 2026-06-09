@@ -248,3 +248,20 @@ Start small.
 Promote abstractions when repeated pressure appears.
 
 Once pressure appears, promote the abstraction decisively and document why.
+
+23. Validation Code Collects All Safely Observable Violations
+-------------------------------------------------------------
+
+Validation code should collect all safely observable independent
+violations. A failed check should prevent only checks that would be
+unsafe or meaningless to evaluate.
+
+For container validation, invalid elements should be reported, then
+other checks should continue over the valid typed subset when possible.
+For example, a catalog containing one bad plan element should still
+report duplicate plan codes among the valid plan elements and unresolved
+feature plan references that can be checked safely.
+
+Validation code should not stop at the first failure unless continuing
+would require dereferencing invalid structure or would produce misleading
+secondary errors.

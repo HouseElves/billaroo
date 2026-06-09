@@ -1,16 +1,10 @@
-"""
-Subscriber construction helpers.
+"""Subscriber construction helpers.
 
-The model layer derives deterministic IDs, validates the plan code
-against a catalog, and produces validated subscriber contract
-instances.
+The model layer derives deterministic IDs, constructs validated
+subscriber contract instances via ``create_validated`` (D32), and
+validates the plan code against a catalog as the semantic boundary
+(D15).
 """
-
-# pylint: disable=duplicate-code
-# Reason: account and subscriber contracts intentionally duplicate the tiny
-# validation helpers for now. D29 records this as real pressure toward a future
-# shared validation vocabulary, but extraction is premature until another
-# contract module repeats the pattern.
 
 from __future__ import annotations
 
@@ -30,15 +24,13 @@ def build_subscriber(
 ) -> Subscriber:
     """Build a validated :class:`Subscriber` with a deterministic ID.
 
-    Construction follows a four-step order so that structural and
-    semantic validation surface at the right layers:
+    Construction follows the four-step order (D15, D31):
 
     1. Derive ``subscriber_id`` via ``derive_id`` (D28).
-    2. Construct the :class:`Subscriber`, which runs structural
-       validation in ``__post_init__``.
-    3. Validate the constructed ``subscriber.plan_code`` against
-       *catalog* — the semantic boundary described in design
-       constitution rule 8.
+    2. Construct via ``Subscriber.create_validated(...)`` which
+       runs type checks and structural validation.
+    3. Validate ``subscriber.plan_code`` against *catalog* — the
+       semantic boundary described in design constitution rule 8.
     4. Return the validated subscriber.
 
     Args:
@@ -53,12 +45,12 @@ def build_subscriber(
     """
     subscriber_id = derive_id("subscriber", account_id, subscriber_ordinal)
 
-    subscriber = Subscriber(
-        subscriber_id=subscriber_id,
-        account_id=account_id,
-        subscriber_ordinal=subscriber_ordinal,
-        plan_code=plan_code,
-        active=active,
+    subscriber = Subscriber.create_validated(
+        subscriber_id,
+        account_id,
+        subscriber_ordinal,
+        plan_code,
+        active,
     )
 
     plan_codes = {p.plan_code for p in catalog.plans}

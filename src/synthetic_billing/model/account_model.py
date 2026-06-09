@@ -1,7 +1,7 @@
 """Account construction helpers.
 
 The model layer derives deterministic IDs and produces validated
-account contract instances.
+account contract instances via ``create_validated`` (D32).
 """
 
 from __future__ import annotations
@@ -36,10 +36,10 @@ def build_account(
         A frozen :class:`Account` instance.
     """
     account_id = derive_id("account", seed, account_ordinal)
-    return Account(
-        account_id=account_id,
-        account_ordinal=account_ordinal,
-        billing_cycle_day=billing_cycle_day,
-        region_code=region_code,
-        account_status=account_status,
+    return Account.create_validated(
+        account_id,
+        account_ordinal,
+        billing_cycle_day,
+        region_code,
+        account_status,
     )

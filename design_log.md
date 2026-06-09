@@ -909,3 +909,85 @@ object before being applied retroactively.
   ``_structural_checks`` cannot express.
 - Event or invoice contracts introduce union-typed fields beyond
   ``int | None`` that stress the ``CheckSpec`` format.
+
+### D32. Existing Contracts Adopt Shared Validation Vocabulary
+
+Catalog, account, and subscriber contracts are retrofitted onto the
+shared ``_Validated`` mix-in (D30) that the subscription contract
+exercised first (D31).  Every domain dataclass now follows the same
+shape:
+
+- frozen dataclass subclassing ``_Validated``
+- ``_type_check_specs`` for constructor type validation
+- ``_structural_checks`` returning a tuple of ``CheckTuple`` values
+  for value, range, vocabulary, and cross-field rules
+- construction through ``Class.create_validated(...)`` in model
+  builders
+
+Behavior changes are limited to the validation surface and to two
+small rule tightenings recorded below.  No new contracts, no new
+fields, no changes to ID derivation, no changes to the four-step
+model-builder pattern.
+
+#### Validation Behavior Changes
+
+- Constructor type errors that previously raised ``TypeError`` from
+  ``__post_init__`` now raise ``InvalidRequestError`` with a
+  ``violations`` tuple from ``create_validated``.  Structural errors
+  that previously raised ``ValueError`` likewise route through
+  ``InvalidRequestError``.
+- Multiple violations are collected into one error rather than
+  failing at the first bad field.
+
+Direct dataclass construction (e.g. ``Account(...)``) still
+constructs without running checks; ``validate()`` and ``is_valid()``
+are the explicit entry points for direct-construction paths.  Model
+builders always go through ``create_validated``.
+
+#### Rule Tightenings
+
+Two prior structural rules were permissive in earlier
+slices and have been tightened here:
+
+- ``FeatureDefinition.allowed_plan_codes`` must be non-empty.  A
+  feature with no compatible plans was structurally valid before and
+  is rejected now.
+- ``Catalog.plans`` must contain at least one plan.  An empty catalog
+  was structurally valid before and is rejected now.
+
+Both rules reflect domain truth: a feature with no host plan cannot
+be attached, and a catalog with no plans cannot back a scenario.
+Either could be relaxed again if a real use case appears.
+
+#### Field Renames
+
+- ``PlanDefinition.plan_name`` → ``PlanDefinition.display_name``
+- ``FeatureDefinition.feature_name`` → ``FeatureDefinition.display_name``
+
+Both fields hold the same role — a human-readable label — and were
+named asymmetrically only because the original slice handled them in
+sequence.  Unifying to ``display_name`` removes a small consistency
+burden.
+
+#### Helper And Suppression Removals
+
+The retrofit deletes the per-module ``_validate_non_blank``,
+``_validate_ordinal``, ``_validate_non_blank_code``, and
+``_validate_decimal_price`` helpers.  Their behavior moves into
+``_type_check_specs`` and ``_structural_checks``.  The
+``duplicate-code`` (R0801) pylint deduction documented in D29 is
+resolved naturally — the duplicated helpers no longer exist.  No new
+global pylint suppressions were added; the existing local
+suppressions are still justified.
+
+#### Revisit When
+
+- A future contract surfaces a validation pattern that does not fit
+  the single-pass ``_structural_checks`` shape (e.g. multi-phase
+  validation, externally-supplied checks).
+- The tightened rules in this slice (non-empty plans, non-empty
+  ``allowed_plan_codes``) need to be relaxed to support a real
+  use case.
+- A downstream consumer (API surface, dbt reporter, error UX) needs
+  a stable serialization of the ``violations`` tuple — at which
+  point its shape becomes part of the public contract.

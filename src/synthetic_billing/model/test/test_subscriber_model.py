@@ -5,6 +5,7 @@ import pytest
 from synthetic_billing.contracts.catalog_contracts import Catalog
 from synthetic_billing.contracts.id_contracts import derive_id
 from synthetic_billing.contracts.subscriber_contracts import Subscriber
+from synthetic_billing.exceptions import InvalidRequestError
 from synthetic_billing.model.catalog_model import build_catalog, build_plan
 from synthetic_billing.model.subscriber_model import build_subscriber
 
@@ -59,7 +60,7 @@ class TestBuildSubscriberHappyPath:
 
 
 class TestBuildSubscriberIdDerivation:
-    """build_subscriber derives subscriber_id via derive_id('subscriber', account_id, ordinal)."""
+    """build_subscriber derives subscriber_id via derive_id('subscriber', ...)."""
 
     def test_id_matches_derive_id(self) -> None:
         """The subscriber_id matches a direct derive_id call."""
@@ -111,7 +112,7 @@ class TestBuildSubscriberIdDerivation:
 
 
 class TestBuildSubscriberCatalogValidation:
-    """build_subscriber validates plan_code against the catalog (D15 semantic boundary)."""
+    """build_subscriber validates plan_code against the catalog (D15 boundary)."""
 
     def test_rejects_unknown_plan_code(self) -> None:
         """A plan code not in the catalog raises ValueError."""
@@ -158,3 +159,13 @@ class TestBuildSubscriberInputValidation:
                 account_id="acct001", subscriber_ordinal=True,
                 plan_code="BASIC", catalog=_catalog(),
             )
+
+    def test_rejects_non_bool_active(self) -> None:
+        """A non-bool active is rejected by create_validated."""
+        with pytest.raises(InvalidRequestError) as exc_info:
+            build_subscriber(
+                account_id="acct001", subscriber_ordinal=0,
+                plan_code="BASIC", catalog=_catalog(),
+                active=1,  # type: ignore[arg-type]
+            )
+        assert any(f == "active" for f, _ in exc_info.value.violations)

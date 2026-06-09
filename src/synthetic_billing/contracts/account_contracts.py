@@ -1,22 +1,21 @@
 """Account record schema.
 
-Pure contract module: no I/O, no logging, no database, no pandas.
+Pure contract module: no I/O, no logging, no database, no pandas, no
+model-layer imports.
 
 An account is the top-level billing entity — a household or business
 that owns one or more subscriber lines.  This module defines the
 structural shape of an account record and the fixed vocabulary of
-account statuses.
+account statuses.  Validation runs through the shared ``_Validated``
+mix-in (D30, D32).
 """
-
-# pylint: disable=duplicate-code
-# Reason: account and subscriber contracts intentionally duplicate the tiny
-# validation helpers for now. D29 records this as real pressure toward a future
-# shared validation vocabulary, but extraction is premature until another
-# contract module repeats the pattern.
 
 from __future__ import annotations
 
 import dataclasses
+from typing import ClassVar
+
+from synthetic_billing._validation import CheckSpec, CheckTuple, _Validated
 
 __all__ = ["ACCOUNT_STATUSES", "Account"]
 
@@ -29,26 +28,8 @@ ACCOUNT_STATUSES: tuple[str, ...] = ("active", "suspended", "closed")
 """
 
 
-def _validate_non_blank(name: str, value: object) -> None:
-    """Check that *value* is a non-blank string."""
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be str, got {type(value).__name__}")
-    if not value.strip():
-        raise ValueError(f"{name} must not be blank")
-
-
-def _validate_ordinal(name: str, value: object) -> None:
-    """Check that *value* is a non-negative int, rejecting bool."""
-    if isinstance(value, bool):
-        raise TypeError(f"{name} must be int, not bool")
-    if not isinstance(value, int):
-        raise TypeError(f"{name} must be int, got {type(value).__name__}")
-    if value < 0:
-        raise ValueError(f"{name} must be >= 0, got {value}")
-
-
 @dataclasses.dataclass(frozen=True)
-class Account:
+class Account(_Validated):
     """A billing account record.
 
     Attributes:
@@ -65,32 +46,40 @@ class Account:
     region_code: str
     account_status: str
 
-    def __post_init__(self) -> None:
-        _validate_non_blank("account_id", self.account_id)
-        _validate_ordinal("account_ordinal", self.account_ordinal)
+    _type_check_specs: ClassVar[tuple[CheckSpec, ...]] = (
+        ("account_id", str),
+        ("account_ordinal", int, bool),
+        ("billing_cycle_day", int, bool),
+        ("region_code", str),
+        ("account_status", str),
+    )
 
-        if isinstance(self.billing_cycle_day, bool):
-            raise TypeError("billing_cycle_day must be int, not bool")
-        if not isinstance(self.billing_cycle_day, int):
-            raise TypeError(
-                f"billing_cycle_day must be int, got "
-                f"{type(self.billing_cycle_day).__name__}"
-            )
-        if not 1 <= self.billing_cycle_day <= 28:
-            raise ValueError(
-                f"billing_cycle_day must be 1..28, got "
-                f"{self.billing_cycle_day}"
-            )
-
-        _validate_non_blank("region_code", self.region_code)
-
-        if not isinstance(self.account_status, str):
-            raise TypeError(
-                f"account_status must be str, got "
-                f"{type(self.account_status).__name__}"
-            )
-        if self.account_status not in ACCOUNT_STATUSES:
-            raise ValueError(
-                f"account_status must be one of {ACCOUNT_STATUSES}, "
-                f"got {self.account_status!r}"
-            )
+    def _structural_checks(self) -> tuple[CheckTuple, ...]:
+        """Return structural validation checks for this account."""
+        return (
+            (
+                bool(self.account_id.strip()),
+                "account_id",
+                self.account_id,
+            ),
+            (
+                self.account_ordinal >= 0,
+                "account_ordinal",
+                self.account_ordinal,
+            ),
+            (
+                1 <= self.billing_cycle_day <= 28,
+                "billing_cycle_day",
+                self.billing_cycle_day,
+            ),
+            (
+                bool(self.region_code.strip()),
+                "region_code",
+                self.region_code,
+            ),
+            (
+                self.account_status in ACCOUNT_STATUSES,
+                "account_status",
+                self.account_status,
+            ),
+        )
