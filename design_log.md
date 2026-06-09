@@ -1079,3 +1079,188 @@ choice.
   helper to construct the canonical ``RandomStream(config.seed)``
   pair — at that point the wrapper lives in the driver, not in the
   builder.
+
+### D34. Raw Operational Emission Writes Files Only
+
+The raw emission layer (``emit/raw_file_emitter.py`` and
+``emit/manifest_emitter.py``) serializes an already-built in-memory
+``SimulationState`` (D33) into raw CSV operational files plus a JSON
+manifest under a caller-provided output directory.  This slice writes
+records only; it does not run the simulation, compute analytics, or
+touch any database.
+
+#### Scope
+
+- Emits ``accounts.csv``, ``subscribers.csv``, ``subscriptions.csv``,
+  and ``manifest.json`` from the records that already exist in the
+  state.
+- Does **not** simulate lifecycle actions, upgrades, cancellations,
+  invoices, payments, or usage — none of those records exist yet
+  (D33 produced a starter population only).
+- Does **not** produce analytic truth, marts, or reconstructed
+  business metrics.  Reconstruction is the downstream dbt layer's job
+  (D8, D17 era decisions); emission only writes operational exhaust.
+- Does **not** load dbt or PostgreSQL, and imports none of the
+  forbidden operational dependencies (D5).  Stdlib only: ``csv``,
+  ``json``, ``dataclasses``, ``pathlib``.
+
+#### Determinism
+
+Emission is deterministic (D2): stable file names (module constants),
+stable column order (explicit ``*_COLUMNS`` tuples mirroring the
+contract dataclass fields), stable row order (the order records
+appear in the state tuples — no re-sort), stable Unix newlines, and a
+stable manifest.  Re-emitting an unchanged state reproduces
+byte-identical files.
+
+Serialization is the boring stdlib default: ``csv`` renders ``bool``
+(``active``) as ``"True"`` / ``"False"`` and ``None`` (an open
+``end_month``) as an empty field.  The raw column schemas are declared
+explicitly rather than derived from the dataclasses, so the on-disk
+shape is a deliberate, reviewable choice; the header tests restate the
+column names literally to catch accidental schema drift.
+
+#### Manifest
+
+``manifest.json`` describes only this raw-emission batch: a
+``format_version`` and a ``files`` array of ``name`` /
+``record_count`` entries.  It contains **no wall-clock timestamps**.
+The project has no deterministic clock abstraction, and a wall-clock
+field would break byte-for-byte reproducibility (D2).  A timestamp
+field becomes a separate decision once a deterministic clock exists.
+
+#### Declared Grain
+
+Every emitted artifact has a declared grain (constitution rule 15).
+These are starter-population snapshots; there is no time dimension yet
+because D33 produces only the initial in-memory state.
+
+- ``accounts.csv``: one row per ``Account`` in
+  ``SimulationState.accounts`` for the emitted starter population
+  snapshot.
+- ``subscribers.csv``: one row per ``Subscriber`` in
+  ``SimulationState.subscribers`` for the emitted starter population
+  snapshot.
+- ``subscriptions.csv``: one row per ``Subscription`` in
+  ``SimulationState.subscriptions`` for the emitted starter population
+  snapshot.
+- ``manifest.json``: one manifest document per raw emission batch;
+  within the ``files`` array, one entry per emitted raw data file.
+
+When later slices add a month dimension and lifecycle records, these
+grains are revisited (e.g. one account per snapshot month) rather than
+silently changed.
+
+#### Overwrite Policy
+
+Existing target files are overwritten deterministically, and the
+output directory (with any missing parents) is created on demand.
+Overwrite was chosen over fail-if-exists because the implementation is
+trivial and rerun determinism (proven by test) makes a rerun safe and
+idempotent.
+
+#### RawEmissionResult
+
+``emit_raw_files`` returns a frozen ``RawEmissionResult`` summarizing
+the batch (the four written paths, the output directory, and three
+row counts).  It is a pure internal return summary whose every field
+is produced by trusted emitter code, so it does **not** adopt the
+``_Validated`` vocabulary (D30) — a plain frozen dataclass is enough
+(constitution rule 22).  Its eight attributes carry a local
+``too-many-instance-attributes`` suppression with rationale; the flat
+shape is the natural form of a batch summary.
+
+#### Not An MVP Yet
+
+This slice does not wire a runnable end-to-end generator.  There is no
+CLI and no orchestration from scenario file to emitted batch; a caller
+must build the state and invoke ``emit_raw_files`` directly.  The
+runnable MVP (CLI wrapping generate → ``build/raw``) is the next
+slice.
+
+#### Revisit When
+
+- A deterministic clock abstraction lands and the manifest should
+  record a reproducible emission timestamp.
+- Later slices add lifecycle events, invoices, or payments to
+  ``SimulationState``, at which point new raw files and manifest
+  entries are added here (each with a declared grain per constitution
+  rule 15).
+- ``RawEmissionResult`` becomes a public boundary read by untrusted
+  callers, at which point it adopts ``_Validated``.
+- The overwrite policy needs to become fail-if-exists for a
+  safety-conscious batch mode.
+
+### D35. Minimal CLI Wires Baseline Population to Raw Emission
+
+``synthetic_billing_cli.py`` adds a thin runnable demo wrapper over the
+existing baseline path:
+
+    load_scenario_config -> build_default_catalog
+    -> RandomStream(config.seed) -> build_population -> emit_raw_files
+
+This makes the baseline runnable from the command line::
+
+    python -m synthetic_billing.synthetic_billing_cli \
+        --config configs/baseline_scenario.yaml \
+        --output-dir build/raw
+
+#### Scope
+
+- The CLI **orchestrates existing functions only**.  It does not
+  reimplement population building (it calls ``build_population``) or
+  raw emission (it calls ``emit_raw_files``).
+- It keeps randomness centralized: ``rng = RandomStream(config.seed)``
+  (D12), constructed by the CLI and passed explicitly into
+  ``build_population`` (the explicit-RNG contract from D33).
+- It does **not** simulate lifecycle changes, create invoices /
+  payments / usage / account actions, compute analytics, or load dbt /
+  PostgreSQL.  None of the forbidden operational dependencies (D5) are
+  imported.
+- It does **not** introduce an orchestration, plugin, logging, or
+  application-service framework.  It is ``argparse`` plus a single
+  ``main(argv) -> int``.
+
+#### Shape
+
+- ``main(argv: Sequence[str] | None = None) -> int`` returns ``0`` on
+  success and ``2`` when the configured scenario file does not exist
+  (caught ``FileNotFoundError``, reported to stderr).  Unrecognized
+  arguments raise ``SystemExit`` via argparse in the usual way.
+- The module guard is ``if __name__ == "__main__": raise
+  SystemExit(main())``, carrying ``# pragma: no cover`` so the import
+  path stays at 100% branch coverage without a runpy hack.
+- A small human-readable summary (output directory, three written
+  counts, manifest path) is printed on success.
+
+#### Default Paths
+
+Defaults are intentionally boring and interpreted **relative to the
+current working directory**, not as package resources:
+
+- ``--config``: ``configs/baseline_scenario.yaml``
+- ``--output-dir``: ``build/raw``
+
+This keeps local demo use simple and avoids package-resource path
+complexity for this thin slice.  Tests prove the cwd-relative behavior
+by ``monkeypatch.chdir(tmp_path)`` rather than writing into the real
+repo tree.
+
+#### Not Full MVP
+
+This slice makes the *baseline starter-population* path runnable.  It
+is not the full simulator: there is still no monthly simulation, no
+lifecycle events, no invoices or payments, and no downstream dbt /
+PostgreSQL reconstruction or validation.  Those remain future work and
+this entry makes no MVP-completion claim beyond the baseline
+generate -> raw-emit demo.
+
+#### Revisit When
+
+- A monthly simulation loop exists and the CLI needs a verb/subcommand
+  surface (at which point a deliberate subcommand decision is made,
+  not an ad-hoc accretion of flags).
+- Config resolution needs to become package-resource aware rather than
+  cwd-relative.
+- Downstream loading/validation becomes runnable and the demo workflow
+  spans more than generate -> raw-emit.
