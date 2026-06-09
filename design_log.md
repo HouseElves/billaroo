@@ -991,3 +991,91 @@ suppressions are still justified.
 - A downstream consumer (API surface, dbt reporter, error UX) needs
   a stable serialization of the ``violations`` tuple — at which
   point its shape becomes part of the public contract.
+
+### D33. First Runnable Baseline Produces In-Memory State Only
+
+The first runnable population builder (``build_population``) produces
+a deterministic in-memory ``SimulationState`` from a
+``ScenarioConfig``, ``Catalog``, and explicit ``RandomStream``.  It
+does not emit files, does not implement a CLI, and does not simulate
+months beyond the initial population.  Raw CSV emission, CLI
+wrapping, and downstream analytics are separate slices.
+
+#### What This Slice Introduces
+
+- ``SimulationState`` — a frozen dataclass using ``_Validated`` (D30)
+  with structural checks for element types, ID uniqueness, and
+  cross-referential integrity (subscriber → account,
+  subscription → subscriber).  Violations are collected per
+  constitution rule 23.  Top-level tuple-ness is checked at two
+  layers: ``_type_check_specs`` runs at the constructor-validation
+  layer (the ``create_validated`` path), and ``_structural_checks``
+  re-checks tuple-ness so that direct-construction callers — who
+  bypass ``create_validated`` — still get reported as invalid by
+  ``validate()`` / ``is_valid()`` rather than silently passing.
+  Dependent checks (element types, uniqueness, cross-references) are
+  skipped only for the top-level fields that are not safely
+  iterable; correctly-typed fields still surface their own
+  violations.
+
+- ``build_population`` — creates ``config.starting_accounts``
+  accounts, one subscriber per account, one active plan subscription
+  per subscriber starting in month 1, and optionally one feature
+  subscription per subscriber gated by ``config.prob_feature_add``
+  and feature-plan compatibility.  The function takes an explicit
+  ``RandomStream`` parameter rather than constructing one internally
+  from ``config.seed``; the caller (test, driver, future CLI) is
+  responsible for the canonical ``RandomStream(config.seed)``
+  pattern.  This keeps the builder decoupled from internal RNG
+  construction and makes substream-injection ergonomic when later
+  slices need it.
+
+- ``build_default_catalog`` — a convenience helper in
+  ``catalog_model.py`` returning a small three-plan, two-feature
+  catalog for baseline scenarios and tests.
+
+- Static population vocabulary (regions, billing cycle days) lives in
+  ``population_builder.py``, not in contract modules, because it is
+  a simulation-level choice.
+
+#### Rationale
+
+Separating in-memory population from file emission keeps each slice
+small and testable in isolation.  The population builder proves that
+the account → subscriber → subscription construction chain works
+end-to-end with deterministic IDs, seeded RNG, and catalog-validated
+builders before any I/O concerns enter the picture.
+
+Taking an explicit ``RandomStream`` rather than constructing one
+from ``config.seed`` also makes the determinism contract
+(D2) testable at the function boundary: identical
+``(config, catalog, rng)`` triples produce identical states, and the
+test surface does not depend on the builder's internal RNG-creation
+choice.
+
+#### Alternatives Considered
+
+- Build population and emit CSVs in one slice — would couple
+  construction correctness to file-format concerns.
+- Skip ``SimulationState`` and pass loose tuples — would lose the
+  structural validation that catches dangling references and
+  duplicate IDs at construction time.
+- Have ``build_population`` construct its own ``RandomStream`` from
+  ``config.seed`` — rejected because it hides RNG construction inside
+  the builder and complicates future seed-substream patterns.
+- Place default catalog in a config file — premature for v0; a
+  code-level helper is simpler and more testable.
+
+#### Revisit When
+
+- The monthly simulation loop extends ``SimulationState`` with
+  additional collections (events, invoices, payments, truth records)
+  and the dataclass field count warrants a builder or merge pattern.
+- A second catalog (e.g. loaded from YAML) makes
+  ``build_default_catalog`` redundant for production use.
+- The static population vocabulary (regions, billing cycle days)
+  needs to become scenario-configurable rather than hardcoded.
+- A CLI or driver appears that needs an opinionated convenience
+  helper to construct the canonical ``RandomStream(config.seed)``
+  pair — at that point the wrapper lives in the driver, not in the
+  builder.

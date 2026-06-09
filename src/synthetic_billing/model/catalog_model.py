@@ -18,7 +18,7 @@ from synthetic_billing.contracts.catalog_contracts import (
 )
 from synthetic_billing.model.money_model import build_money
 
-__all__ = ["build_plan", "build_feature", "build_catalog"]
+__all__ = ["build_plan", "build_feature", "build_catalog", "build_default_catalog"]
 
 
 def build_plan(
@@ -65,3 +65,38 @@ def build_catalog(
 ) -> Catalog:
     """Build a validated ``Catalog`` from iterables of definitions."""
     return Catalog.create_validated(tuple(plans), tuple(features))
+
+
+def build_default_catalog() -> Catalog:
+    """Build a small deterministic catalog for baseline scenarios.
+
+    The catalog contains three plans (BASIC, STANDARD, PREMIUM) and
+    two features (CLOUD_DVR compatible with STANDARD and PREMIUM,
+    INTL_CALLING compatible with all three plans).  Prices are
+    intentionally round-number Decimals suitable for readable test
+    output and straightforward invoice arithmetic.
+
+    This is a convenience helper for population building and tests.
+    Production-grade catalogs would be loaded from configuration files.
+    """
+    basic = build_plan("BASIC", "Basic Plan", "29.99")
+    standard = build_plan("STANDARD", "Standard Plan", "49.99")
+    premium = build_plan("PREMIUM", "Premium Plan", "79.99")
+
+    cloud_dvr = build_feature(
+        "CLOUD_DVR",
+        "Cloud DVR",
+        "9.99",
+        ("STANDARD", "PREMIUM"),
+    )
+    intl_calling = build_feature(
+        "INTL_CALLING",
+        "International Calling",
+        "14.99",
+        ("BASIC", "STANDARD", "PREMIUM"),
+    )
+
+    return build_catalog(
+        [basic, standard, premium],
+        [cloud_dvr, intl_calling],
+    )

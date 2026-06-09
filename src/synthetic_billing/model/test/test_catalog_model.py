@@ -12,6 +12,7 @@ from synthetic_billing.contracts.catalog_contracts import (
 from synthetic_billing.exceptions import InvalidRequestError
 from synthetic_billing.model.catalog_model import (
     build_catalog,
+    build_default_catalog,
     build_feature,
     build_plan,
 )
@@ -150,3 +151,43 @@ class TestDeterminism:
         a = build_plan("BASIC", "Basic", "9.99")
         b = build_plan("BASIC", "Basic", "9.99")
         assert a == b
+
+
+class TestBuildDefaultCatalog:
+    """build_default_catalog returns a valid deterministic catalog."""
+
+    def test_returns_catalog(self) -> None:
+        """build_default_catalog returns a Catalog instance."""
+        cat = build_default_catalog()
+        assert isinstance(cat, Catalog)
+
+    def test_three_plans(self) -> None:
+        """Default catalog has three plans: BASIC, STANDARD, PREMIUM."""
+        cat = build_default_catalog()
+        codes = {p.plan_code for p in cat.plans}
+        assert codes == {"BASIC", "STANDARD", "PREMIUM"}
+
+    def test_two_features(self) -> None:
+        """Default catalog has two features: CLOUD_DVR, INTL_CALLING."""
+        cat = build_default_catalog()
+        codes = {f.feature_code for f in cat.features}
+        assert codes == {"CLOUD_DVR", "INTL_CALLING"}
+
+    def test_deterministic(self) -> None:
+        """Repeated calls produce equal catalogs."""
+        a = build_default_catalog()
+        b = build_default_catalog()
+        assert a == b
+
+    def test_is_valid(self) -> None:
+        """Default catalog passes structural validation."""
+        cat = build_default_catalog()
+        assert cat.is_valid()
+
+    def test_feature_plan_compatibility(self) -> None:
+        """Feature allowed_plan_codes reference valid plans."""
+        cat = build_default_catalog()
+        plan_codes = {p.plan_code for p in cat.plans}
+        for feature in cat.features:
+            for code in feature.allowed_plan_codes:
+                assert code in plan_codes
