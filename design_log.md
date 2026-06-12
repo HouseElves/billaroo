@@ -1264,3 +1264,126 @@ generate -> raw-emit demo.
   cwd-relative.
 - Downstream loading/validation becomes runnable and the demo workflow
   spans more than generate -> raw-emit.
+
+### D36. README, Local Check-In Gate, and GitHub Quality Gate
+
+This slice puts a public face on the project. It updates the README to
+honestly reflect the current local-MVP scope and adds a single check-in
+script that the CI workflow defers to, so the gate developers run
+locally is the gate CI runs — by construction.
+
+#### What This Slice Adds
+
+- **`README.md`** — rewritten end-to-end as the project's public
+  face. It christens the project as **Billaroo**; states the central
+  claim that known truth makes metric reconstruction testable; and
+  honestly distinguishes current capability from planned architecture.
+  It documents the current runnable baseline — deterministic starter
+  population, raw CSV emission, manifest emission, and the demo CLI —
+  and covers editable install, the test commands, the CLI quickstart
+  (with and without explicit arguments), and the local/CI check-in
+  gate. The AI-first methodology section is placed before design
+  governance. It points to the charter (``docs/project_charter.rst``),
+  the design constitution (``docs/design_constitution.rst``), and the
+  design log (``design_log.md``), and preserves the explanation of the
+  intentional zero-length placeholder files (rules 18 and 21).
+
+- **`scripts/checkin.sh`** — a bash script under ``set -euo
+  pipefail`` that ``cd``s to the repo root regardless of where it's
+  invoked, then runs ``compileall``, ``pytest``, ``coverage run
+  --branch`` + ``coverage report --fail-under=100``, ``pylint``, and a
+  CLI smoke test.  The smoke test writes into a ``mktemp -d``
+  directory with an ``EXIT`` trap for cleanup, so the working tree is
+  never dirtied (``build/raw`` is not touched).  Sections are labelled
+  with ``==>`` markers for readable output.
+
+- **`.github/workflows/checkin.yml`** — one Ubuntu job triggered on
+  ``push`` and ``pull_request`` with ``permissions: contents: read``.
+  Uses ``actions/checkout@v6`` and ``actions/setup-python@v6`` with
+  Python ``3.11`` (matching ``pyproject.toml``) and pip caching.  The
+  final step runs ``scripts/checkin.sh`` — no gate commands are
+  duplicated in YAML, because duplicated gates rot.
+
+#### Honesty Boundaries Enforced
+
+The previous README described planned downstream behavior in a way
+that could be read as current project capability. The new README
+plainly separates what is built (deterministic starter population +
+raw emission + CLI) from what is future work (everything downstream of
+raw emission). Future capabilities appear only where they are
+explicitly framed as planned architecture or roadmap.
+
+#### What This Slice Does Not Add
+
+No product behavior was changed. No new runtime or dev dependency was
+introduced. The slice does not add Docker, tox, nox, pre-commit, a
+Makefile, release automation, package publishing, coverage-service
+integration, badges, GitHub workflow matrices, or artifact uploads.
+It is one README, one shell script, and one workflow.
+
+#### Revisit When
+
+- The default branch name or workflow filename is final and stable —
+  at that point a CI status badge in the README earns its place.
+- The project grows additional runnable entry points (loader,
+  validator) that warrant their own smoke tests inside
+  ``scripts/checkin.sh``.
+- Python support widens beyond ``3.11`` and the CI workflow grows a
+  small version matrix.
+- A separate fast-feedback developer script (lint-only, test-only)
+  emerges from real workflow pressure (constitution rule 22).
+
+### D37. Project License: AGPL-3.0-or-later
+
+Billaroo is licensed under the GNU Affero General Public License,
+version 3.0 or later (``AGPL-3.0-or-later``).
+
+#### What This Slice Adds
+
+- A root-level ``LICENSE`` file containing the full verbatim FSF AGPL
+  v3.0 text.
+- A ``## License`` section in the README, after Design Governance,
+  naming the license, the copyright holder (© 2026 Andrew Milton), and
+  pointing to ``LICENSE``.
+- A consistent license declaration in ``pyproject.toml`` using the
+  PEP 639 SPDX expression ``license = "AGPL-3.0-or-later"`` plus
+  ``license-files = ["LICENSE"]``.
+
+#### Rationale
+
+AGPL-3.0 is a deliberate choice for a project whose intended downstream
+form is a network-facing analytics pipeline. The AGPL's network-use
+clause (section 13, Remote Network Interaction) extends copyleft to
+users who interact with a modified version over a network, not only to
+those who receive a distributed binary. For a synthetic-data generator
+meant to demonstrate governed, reproducible engineering in the open,
+the strong-copyleft, source-must-stay-open posture matches the project
+intent.
+
+The SPDX string form is used rather than the legacy ``license = {text
+= ...}`` table or ``License ::`` trove classifiers because PEP 639 is
+the current standard and the two styles must not be mixed. The
+``[build-system]`` requirement is raised to ``setuptools>=77.0``, the
+first release that understands the PEP 639 ``License-Expression``
+metadata, so the declaration is valid against the backend that builds
+the wheel. A build was run to confirm the generated metadata carries
+``License-Expression: AGPL-3.0-or-later`` and bundles ``LICENSE`` under
+``dist-info/licenses/``.
+
+#### Notes
+
+- No per-file copyright/license headers were added. The project does
+  not follow a per-file-header convention, and adding noisy headers to
+  every module would be out of keeping (constitution rule 22 —
+  abstractions, and conventions, earn their existence).
+- The license text is the unmodified FSF original; the "How to Apply"
+  appendix retains the canonical ``<year>`` / ``<name of author>``
+  placeholders, which are part of the license text itself and are not
+  meant to be filled in within ``LICENSE``.
+
+#### Revisit When
+
+- The copyright holder set changes (additional contributors,
+  assignment to an entity).
+- A dual-licensing or relicensing need arises — at which point the
+  decision is amended here rather than changed silently.
