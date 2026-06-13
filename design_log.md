@@ -1387,3 +1387,124 @@ the wheel. A build was run to confirm the generated metadata carries
   assignment to an entity).
 - A dual-licensing or relicensing need arises — at which point the
   decision is amended here rather than changed silently.
+
+### D38. First Cancellation Feature Boundary and Dynamic Vocabulary
+
+The first lifecycle-feature slice fixes only the boundary needed to
+express deterministic monthly subscriber cancellation:
+
+```
+deterministic monthly subscriber cancellation
+    -> explicit semantic action chain
+    -> lifecycle event emission
+```
+
+This decision records the contracts, protocol, result record, and
+unimplemented entry points introduced by that slice — and the
+behaviour deliberately not introduced.
+
+#### What This Slice Adds
+
+- A lifecycle event vocabulary in
+  ``contracts/event_contracts.py``: the constant
+  ``SUBSCRIBER_CANCELLED_EVENT_TYPE = "subscriber_cancelled"``, the
+  vocabulary tuple ``LIFECYCLE_EVENT_TYPES = (...,)``, and the frozen
+  ``LifecycleEvent`` record with structural validation under the
+  ``_Validated`` mix-in (D30, D31, constitution rule 23).
+- A cancellation intent in
+  ``actions/lifecycle_actions.py``: the frozen
+  ``CancelSubscriberIntent`` record carrying only ``simulation_month``
+  and ``subscriber_id``, plus the unimplemented entry point
+  ``build_cancel_subscriber_action_chain``.
+- A minimum action protocol and ordered-chain result in
+  ``actions/action_protocols.py``: a structural, non-runtime-checkable
+  ``SemanticAction`` ``Protocol`` with one method
+  ``apply(state) -> ActionResult``, and the frozen ``ActionResult``
+  record carrying only the updated ``SimulationState`` and the
+  produced ``lifecycle_events`` tuple.
+- An unimplemented ordered-chain entry point in
+  ``actions/action_chain.py``: ``apply_action_chain(state, actions)``.
+- An unimplemented lifecycle event builder in
+  ``model/lifecycle_model.py``:
+  ``build_subscriber_cancelled_event(state, intent)``.
+- Companion tests in each module's local ``test`` submodule that
+  exercise the contracts and assert that the three unimplemented
+  entry points raise ``NotImplementedError`` immediately
+  (constitution rule 21).
+
+#### Boundaries Fixed by This Slice
+
+- Month ``1`` remains the starter-population month; cancellation
+  intents and lifecycle events begin at simulation month ``2``.
+  Structural validation rejects month ``1`` on both
+  ``CancelSubscriberIntent`` and ``LifecycleEvent``.
+- ``CancelSubscriberIntent`` carries only month and subscriber
+  identity.  Owning account, plan code, and a deterministic event ID
+  are resolved from simulation state by later implementation, not
+  pre-baked into the intent.
+- ``LifecycleEvent`` introduces only the ``subscriber_cancelled``
+  event type.  No payload field, source timestamp, prior/new-plan
+  field, schema registry, or event-version abstraction is introduced.
+- ``ActionResult`` carries only the updated simulation state and the
+  ordered ``lifecycle_events`` tuple.  Hidden-truth updates, invoice
+  records, payment records, generic record collections, logs,
+  warnings, backend handles, success flags, and arbitrary metadata
+  are not introduced.
+- ``SemanticAction`` is a minimal structural protocol with one method,
+  ``apply(state) -> ActionResult``.  It is intentionally not
+  runtime-checkable.
+- The three public feature entry points
+  (``build_cancel_subscriber_action_chain``, ``apply_action_chain``,
+  ``build_subscriber_cancelled_event``) are intentionally unimplemented
+  stubs in this slice.  Companion tests make the unavailable boundary
+  explicit under constitution rule 21.
+
+#### What This Slice Does Not Do
+
+No cancellation state mutation, subscription closing, subscriber
+deactivation, action execution, deterministic event-ID derivation,
+lifecycle-event construction, monthly iteration, cancellation
+probability selection, raw event CSV emission, manifest change, CLI
+change, simulation-state coherence change, hidden truth, billing,
+PostgreSQL load, or dbt model is implemented here.  Upgrades,
+downgrades, reactivation, and later feature changes are also out of
+scope.  No generic action registry, plugin architecture, execution
+backend, rollback or transaction machinery, or logging/tracing
+framework is introduced.
+
+#### Rationale
+
+Carrying the minimum fields on the intent (just month and subscriber)
+keeps the contract honest about what the caller actually decided.
+Plan code, owning account, and event identity are derived facts; they
+belong to the lookup logic that will later resolve them from
+simulation state.  Pre-baking them into the intent would predeclare a
+derivation that does not exist yet.
+
+The single ``subscriber_cancelled`` event type follows the same logic:
+every other event type the project will eventually need (upgrade,
+downgrade, reactivation, feature change) requires concrete behaviour
+to emit it.  Adding them to the vocabulary now would predeclare
+behaviour the project does not own (constitution rule 22).
+
+The ``ActionResult`` shape mirrors the same restraint.  Hidden-truth
+updates, invoice records, and payment records are real downstream
+concerns, but none of them is reachable from a cancellation chain in
+this slice.  When concrete pressure to express them arrives, the
+record will be amended here, not amended silently.
+
+#### Revisit When
+
+- Implementation of any of the three stubs reveals that the minimal
+  ``CancelSubscriberIntent``, ``LifecycleEvent``, ``ActionResult``,
+  or ``SemanticAction`` shape is insufficient — for example, when the
+  cancellation chain needs to update hidden truth, emit a billing
+  record, or thread an RNG-derived value that cannot be recovered
+  from simulation state alone.
+- A second lifecycle event type (upgrade, downgrade, reactivation,
+  feature change) has concrete construction logic ready to commit, at
+  which point ``LIFECYCLE_EVENT_TYPES`` is extended here and the new
+  builder is introduced under its own decision.
+- A second concrete ``SemanticAction`` implementation arrives and the
+  protocol surface needs to widen — at which point the widening is
+  decided here, not added silently.

@@ -29,3 +29,4 @@ external_deps.gv
 all_deps.gv
 .vscode/launch.json
 
+*.zip
