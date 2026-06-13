@@ -1,15 +1,13 @@
-"""Ordered action-chain application entry point.
+"""Ordered action-chain application (D38, D39).
 
-This slice fixes the public boundary of chain application (D38).  The
-function ``apply_action_chain`` accepts a frozen simulation state and an
-ordered tuple of semantic actions, and returns a single
-:class:`ActionResult` summarising the combined effect on state and the
-ordered lifecycle events produced.
+:func:`apply_action_chain` executes a tuple of :class:`SemanticAction`
+instances in order, threading state from one action's result into the
+next action's input, and accumulating their lifecycle events in
+emission order.
 
-Execution semantics (per-action application, event accumulation,
-ordering guarantees, error handling) belong to a later slice.  This
-entry point raises ``NotImplementedError`` immediately; its companion
-test asserts that boundary under constitution rule 21.
+It does not retry, wrap, or roll back action failures: any exception
+raised by an action propagates unchanged.  Empty chains return the
+original state and an empty event tuple.
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ from synthetic_billing.actions.action_protocols import (
     ActionResult,
     SemanticAction,
 )
+from synthetic_billing.contracts.event_contracts import LifecycleEvent
 from synthetic_billing.simulate.simulation_state import SimulationState
 
 __all__ = ["apply_action_chain"]
@@ -29,10 +28,24 @@ def apply_action_chain(
 ) -> ActionResult:
     """Apply an ordered action chain to ``state``.
 
-    Application semantics — per-action invocation, lifecycle-event
-    accumulation, and ordering guarantees — are reserved for a later
-    slice (D38).  This entry point raises ``NotImplementedError``
-    immediately and does not inspect either argument.
+    Each action is invoked exactly once, in tuple order, and is passed
+    the state returned by the previous action.  Lifecycle events are
+    accumulated in action order.  Exceptions raised by any action
+    propagate unchanged (no retry, no wrapping, no rollback).
+
+    Args:
+        state: The starting simulation state.
+        actions: The ordered chain of semantic actions to apply.
+
+    Returns:
+        An :class:`ActionResult` carrying the final threaded state and
+        the accumulated lifecycle events.  An empty chain returns
+        ``ActionResult(state, ())``.
     """
-    del state, actions
-    raise NotImplementedError("apply_action_chain is not implemented")
+    current_state: SimulationState = state
+    accumulated_events: tuple[LifecycleEvent, ...] = ()
+    for action in actions:
+        step = action.apply(current_state)
+        current_state = step.state
+        accumulated_events = accumulated_events + step.lifecycle_events
+    return ActionResult.create_validated(current_state, accumulated_events)

@@ -1508,3 +1508,146 @@ record will be amended here, not amended silently.
 - A second concrete ``SemanticAction`` implementation arrives and the
   protocol surface needs to widen — at which point the widening is
   decided here, not added silently.
+
+### D39. Cancellation Chain Applies Atomic State Change Then Emits Event
+
+This decision records the product semantics introduced when the
+Slice 1 cancellation entry points (D38) are filled in.  Slice 2
+implements the three stubs so that one already-selected
+``CancelSubscriberIntent`` flows through an ordered semantic action
+chain to produce an updated :class:`SimulationState` and exactly one
+``subscriber_cancelled`` :class:`LifecycleEvent`.
+
+This slice does not choose cancellations and does not advance
+simulation months; those concerns belong to the behaviour model and
+month driver, both still unimplemented.
+
+#### Half-Open Subscription Effective Dates
+
+Subscription effective dates for cancellation are interpreted as the
+half-open interval ``[start_month, end_month)``.  A subscription
+ending in month ``m`` is therefore not active during month ``m``.
+
+Same-month subscription start and cancellation is unsupported:
+``[m, m)`` would be an empty effective range and is rejected loudly.
+Any active subscription whose ``start_month`` is at least the intent
+month is treated as the same defect family and fails the same way.
+
+#### Ordered Two-Action Cancellation Chain
+
+``build_cancel_subscriber_action_chain(intent)`` returns exactly two
+ordered semantic actions:
+
+1. **State-change action.** Atomically deactivates the subscriber and
+   ends every active plan and feature subscription belonging to that
+   subscriber, with ``end_month`` set to the intent month and
+   ``subscription_status`` set to ``"ended"``.  Already-ended
+   subscriptions and subscriptions belonging to other subscribers are
+   preserved exactly.  Tuple order is preserved.  No lifecycle event
+   is emitted.
+2. **Event-emit action.** Builds the single
+   ``subscriber_cancelled`` lifecycle event from the
+   post-cancellation state and returns it without modifying state.
+
+Chain order is observable: the event action operates on the state
+produced by the state-change action.  The chain returned by the
+builder is a frozen tuple and contains exactly these two actions.
+
+#### Atomic Subscriber and Subscription State Change
+
+The state-change action's pre-conditions are checked before any
+state is rebuilt:
+
+- the named subscriber must exist;
+- the named subscriber must be active;
+- the subscriber must own exactly one active plan subscription;
+- that plan subscription's ``item_code`` must agree with the
+  subscriber's ``plan_code``;
+- every active subscription belonging to the subscriber must have
+  ``start_month`` strictly less than the intent month.
+
+Any failure raises :class:`InvalidRequestError` with the offending
+field captured in ``violations``.  Frozen dataclasses make in-place
+mutation physically impossible; record updates are produced through
+``dataclasses.replace`` and rebuilt into new tuples, and the new
+:class:`SimulationState` is constructed via ``create_validated``,
+which revalidates the state-level container, uniqueness, and
+cross-reference invariants.
+
+The inactive subscriber's ``plan_code`` is retained.  The retained
+plan code is the canonical last-assigned plan, used both for audit
+and as the source of the lifecycle event's ``plan_code`` field.
+
+#### Deterministic Cancellation Event Identity
+
+``build_subscriber_cancelled_event(state, intent)`` constructs the
+event from the post-cancellation state.  Event-ID derivation follows
+the canonical field order required by D38::
+
+    derive_id(
+        "lifecycle_event",
+        "subscriber_cancelled",
+        subscriber_id,
+        simulation_month,
+    )
+
+The event carries the cancelled subscriber's account ID, subscriber
+ID, retained plan code, cancellation month, and the existing
+``subscriber_cancelled`` event type.  The builder fails loudly when
+the post-state does not unambiguously prove cancellation:
+
+- the subscriber must be present and inactive;
+- exactly one plan subscription must have ``end_month`` equal to the
+  intent month with status ``"ended"``;
+- that plan subscription's ``item_code`` must agree with the
+  subscriber's retained ``plan_code``.
+
+#### Ordered Chain Application and Event Accumulation
+
+``apply_action_chain(state, actions)`` runs the chain with these
+guarantees:
+
+- every action is invoked exactly once, in tuple order;
+- the state passed to each action is the state returned by the
+  previous action (state is threaded);
+- lifecycle events are accumulated in action order, and within an
+  action in emission order;
+- an empty action tuple returns the original state and an empty
+  event tuple;
+- any exception raised by an action propagates unchanged: no retry,
+  no wrapping, no rollback, no further actions invoked.
+
+The returned :class:`ActionResult` is constructed through
+``create_validated`` so the structural shape of the result is
+revalidated at every chain return.
+
+#### Out of Scope for This Slice
+
+This slice does not implement: cancellation probability selection,
+monthly iteration, the behaviour model that picks cancellations,
+randomness, raw lifecycle-event CSV emission, manifest changes, CLI
+changes, upgrade/downgrade/reactivation/feature-change semantics,
+account closure, billing, payments, usage, adjustments, hidden truth,
+PostgreSQL load, or dbt models.  No generic action registry, plugin
+architecture, execution backend, rollback or transaction machinery,
+or logging/tracing framework is introduced.
+
+#### Revisit When
+
+- Reactivation arrives and the project needs to distinguish an
+  inactive subscriber retaining a plan from one whose plan code
+  should be cleared.  At that point the retention rule is amended
+  here, not silently changed.
+- A second lifecycle action chain (upgrade, downgrade, reactivation,
+  feature change) requires more than two ordered actions, or shared
+  ordered prelude/postlude steps, at which point the chain shape is
+  refined here rather than generalised speculatively.
+- Same-month start and cancellation becomes a real scenario — for
+  instance, mid-month sign-up immediately followed by cancellation
+  with non-empty effective range expressed in days rather than
+  months — at which point the effective-date model is refined here.
+- An action needs to update hidden truth, emit a billing record, or
+  thread an RNG-derived value that cannot be recovered from
+  simulation state alone, at which point the
+  :class:`ActionResult` shape is amended here under its own
+  decision (D38 already records this revisit hook).
