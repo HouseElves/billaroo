@@ -1,14 +1,21 @@
 # Baseline scenario for synthetic_subscriber_billing.
 # Small scale suitable for testing and demo runs.
+#
+# Slice 3 supports cancellation as the only monthly transition.  The
+# other monthly probabilities (upgrade, downgrade, feature_remove,
+# reactivate, payment_failure) are set to zero so the monthly driver
+# does not reject the configuration as unsupported (D40).
+# prob_feature_add governs starter-population construction (D33) and
+# stays non-zero.
 
 seed: 42
 months: 12
 starting_accounts: 20
 
 prob_cancel: 0.04
-prob_upgrade: 0.03
-prob_downgrade: 0.02
+prob_upgrade: 0.0
+prob_downgrade: 0.0
 prob_feature_add: 0.05
-prob_feature_remove: 0.03
-prob_reactivate: 0.02
-prob_payment_failure: 0.05
+prob_feature_remove: 0.0
+prob_reactivate: 0.0
+prob_payment_failure: 0.0

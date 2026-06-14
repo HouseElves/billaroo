@@ -18,10 +18,12 @@ from synthetic_billing import synthetic_billing_cli as cli
 from synthetic_billing.emit.manifest_emitter import MANIFEST_FILENAME
 from synthetic_billing.emit.raw_file_emitter import (
     ACCOUNTS_FILENAME,
+    LIFECYCLE_EVENTS_FILENAME,
     SUBSCRIBERS_FILENAME,
     SUBSCRIPTIONS_FILENAME,
 )
 from synthetic_billing.model.catalog_model import build_default_catalog
+from synthetic_billing.simulate.month_driver import run_monthly_simulation
 from synthetic_billing.simulate.population_builder import build_population
 from synthetic_billing.simulate.random_stream import RandomStream
 from synthetic_billing.simulate.scenario_config import load_scenario_config
@@ -223,3 +225,60 @@ class TestCliDefaultPaths:
         code = cli.main(["--config", str(_BASELINE_CONFIG)])
         assert code == 0
         assert (tmp_path / "build" / "raw" / MANIFEST_FILENAME).exists()
+
+
+# ---- monthly simulation integration (Slice 3) ----
+
+
+def _independent_event_count(config_path: Path) -> int:
+    """Run the full pipeline independently and return the event count.
+
+    Mirrors the CLI's orchestration so the test does not pin to a
+    hard-coded value the production code is forbidden from carrying.
+    """
+    config = load_scenario_config(config_path)
+    rng = RandomStream(config.seed)
+    state = build_population(config, build_default_catalog(), rng)
+    result = run_monthly_simulation(state, config, rng)
+    return len(result.lifecycle_events)
+
+
+class TestCliMonthlySimulationIntegration:
+    """The CLI runs the monthly simulation and emits lifecycle_events.csv."""
+
+    def test_lifecycle_events_file_created(self, tmp_path) -> None:
+        """The baseline CLI run produces lifecycle_events.csv."""
+        cli.main(_baseline_args(tmp_path))
+        assert (tmp_path / LIFECYCLE_EVENTS_FILENAME).exists()
+
+    def test_manifest_lists_lifecycle_events(self, tmp_path) -> None:
+        """The manifest includes lifecycle_events.csv with a record count."""
+        cli.main(_baseline_args(tmp_path))
+        counts = _manifest_counts(tmp_path)
+        assert LIFECYCLE_EVENTS_FILENAME in counts
+
+    def test_manifest_event_count_matches_independent_run(
+        self, tmp_path,
+    ) -> None:
+        """Manifest event count equals an independent pipeline run."""
+        cli.main(_baseline_args(tmp_path))
+        counts = _manifest_counts(tmp_path)
+        expected = _independent_event_count(_BASELINE_CONFIG)
+        assert counts[LIFECYCLE_EVENTS_FILENAME] == expected
+
+    def test_summary_includes_lifecycle_event_count(
+        self, tmp_path, capsys,
+    ) -> None:
+        """Summary names the lifecycle event count emitted."""
+        cli.main(_baseline_args(tmp_path))
+        out = capsys.readouterr().out
+        expected = _independent_event_count(_BASELINE_CONFIG)
+        assert f"Lifecycle events written: {expected}" in out
+
+    def test_summary_includes_lifecycle_event_path(
+        self, tmp_path, capsys,
+    ) -> None:
+        """Summary names the emitted lifecycle events file path."""
+        cli.main(_baseline_args(tmp_path))
+        out = capsys.readouterr().out
+        assert str(tmp_path / LIFECYCLE_EVENTS_FILENAME) in out

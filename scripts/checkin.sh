@@ -38,6 +38,7 @@ python -m synthetic_billing.synthetic_billing_cli \
 test -f "${TMP_DIR}/raw/accounts.csv"
 test -f "${TMP_DIR}/raw/subscribers.csv"
 test -f "${TMP_DIR}/raw/subscriptions.csv"
+test -f "${TMP_DIR}/raw/lifecycle_events.csv"
 test -f "${TMP_DIR}/raw/manifest.json"
 
 echo "==> check-in sanity passed"

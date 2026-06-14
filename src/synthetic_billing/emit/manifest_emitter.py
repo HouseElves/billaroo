@@ -35,8 +35,8 @@ MANIFEST_FILENAME: str = "manifest.json"
 #
 # - manifest.json: one manifest document per raw emission batch.
 # - Within the manifest's ``files`` array: one entry per emitted raw
-#   data file (currently accounts.csv, subscribers.csv,
-#   subscriptions.csv).
+#   data file (accounts.csv, subscribers.csv, subscriptions.csv,
+#   lifecycle_events.csv).
 #
 # A new emission batch overwrites the prior manifest deterministically;
 # the manifest never accumulates entries across batches.

@@ -1,14 +1,23 @@
-"""Minimal demo CLI: baseline population to raw emission.
+"""Minimal demo CLI: baseline population to monthly cancellation to raw emission.
 
-This is a thin command-line wrapper (D35) over the existing baseline
-path:
+This is a thin command-line wrapper (D35) over the end-to-end path:
 
     load_scenario_config -> build_default_catalog
-    -> RandomStream(config.seed) -> build_population -> emit_raw_files
+    -> RandomStream(config.seed)
+    -> build_population       # consumes RNG draws for the starter
+                              # population
+    -> run_monthly_simulation # consumes further RNG draws for monthly
+                              # cancellation selection (D40)
+    -> emit_raw_files         # serializes final state + ordered
+                              # lifecycle events
 
-It orchestrates existing functions only.  It does not build the
-population or emit files itself, does not simulate lifecycle changes,
-does not create invoices / payments / usage / account actions,
+A single :class:`RandomStream` is constructed once and threaded
+through both stages so the stream position evolves deterministically
+across the full run.
+
+The CLI orchestrates existing functions only.  It does not build the
+population or emit files itself, does not implement transitions
+other than cancellation, does not create invoices / payments / usage,
 computes no analytics, and loads no database.  It is a demo runner,
 not an application framework.
 
@@ -32,6 +41,7 @@ from pathlib import Path
 
 from synthetic_billing.emit.raw_file_emitter import emit_raw_files
 from synthetic_billing.model.catalog_model import build_default_catalog
+from synthetic_billing.simulate.month_driver import run_monthly_simulation
 from synthetic_billing.simulate.population_builder import build_population
 from synthetic_billing.simulate.random_stream import RandomStream
 from synthetic_billing.simulate.scenario_config import load_scenario_config
@@ -53,8 +63,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="synthetic-billing",
         description=(
-            "Build the deterministic baseline starter population and "
-            "emit raw operational files."
+            "Build the deterministic baseline starter population, run "
+            "monthly cancellation simulation, and emit raw operational "
+            "files."
         ),
     )
     parser.add_argument(
@@ -77,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the baseline generate -> raw-emit demo.
+    """Run the baseline generate -> simulate -> raw-emit demo.
 
     Args:
         argv: Optional argument vector excluding the program name.
@@ -101,15 +112,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     catalog = build_default_catalog()
     rng = RandomStream(config.seed)
-    state = build_population(config, catalog, rng)
-    result = emit_raw_files(state, output_dir)
+    starter_state = build_population(config, catalog, rng)
+    sim_result = run_monthly_simulation(starter_state, config, rng)
+    emit_result = emit_raw_files(sim_result, output_dir)
 
     print("Synthetic subscriber billing demo complete.")
-    print(f"Output directory: {result.output_dir}")
-    print(f"Accounts written: {result.accounts_written}")
-    print(f"Subscribers written: {result.subscribers_written}")
-    print(f"Subscriptions written: {result.subscriptions_written}")
-    print(f"Manifest: {result.manifest_path}")
+    print(f"Output directory: {emit_result.output_dir}")
+    print(f"Accounts written: {emit_result.accounts_written}")
+    print(f"Subscribers written: {emit_result.subscribers_written}")
+    print(f"Subscriptions written: {emit_result.subscriptions_written}")
+    print(
+        f"Lifecycle events written: {emit_result.lifecycle_events_written}"
+    )
+    print(f"Lifecycle events file: {emit_result.lifecycle_events_path}")
+    print(f"Manifest: {emit_result.manifest_path}")
     return 0
 
 

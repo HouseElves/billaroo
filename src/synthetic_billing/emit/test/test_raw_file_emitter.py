@@ -13,9 +13,15 @@ from __future__ import annotations
 import csv
 import json
 
+from synthetic_billing.contracts.event_contracts import (
+    LifecycleEvent,
+    SUBSCRIBER_CANCELLED_EVENT_TYPE,
+)
 from synthetic_billing.emit.manifest_emitter import MANIFEST_FILENAME
 from synthetic_billing.emit.raw_file_emitter import (
     ACCOUNTS_FILENAME,
+    LIFECYCLE_EVENT_COLUMNS,
+    LIFECYCLE_EVENTS_FILENAME,
     SUBSCRIBERS_FILENAME,
     SUBSCRIPTIONS_FILENAME,
     RawEmissionResult,
@@ -28,6 +34,7 @@ from synthetic_billing.model.subscription_model import (
     build_feature_subscription,
     build_plan_subscription,
 )
+from synthetic_billing.simulate.simulation_result import SimulationResult
 from synthetic_billing.simulate.simulation_state import SimulationState
 
 
@@ -75,6 +82,20 @@ def _read_rows(path) -> list[list[str]]:
         return list(csv.reader(handle))
 
 
+def _emit_state(state: SimulationState, output_dir) -> RawEmissionResult:
+    """Wrap *state* in a no-events SimulationResult and emit.
+
+    Existing tests pre-date the addition of lifecycle events; they
+    assert state-only invariants and ignore the empty event log.
+    The lifecycle-event integration is exercised separately in
+    :class:`TestRawEmissionLifecycleEvents` below.
+    """
+    return emit_raw_files(
+        SimulationResult.create_validated(state, ()),
+        output_dir,
+    )
+
+
 # ---- file creation ----
 
 class TestRawEmissionFiles:
@@ -82,7 +103,7 @@ class TestRawEmissionFiles:
 
     def test_creates_all_files(self, tmp_path) -> None:
         """All four raw files are created in the output directory."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         assert (tmp_path / ACCOUNTS_FILENAME).exists()
         assert (tmp_path / SUBSCRIBERS_FILENAME).exists()
         assert (tmp_path / SUBSCRIPTIONS_FILENAME).exists()
@@ -92,13 +113,13 @@ class TestRawEmissionFiles:
         """A non-existent nested output directory is created."""
         target = tmp_path / "build" / "raw" / "month_0001"
         assert not target.exists()
-        emit_raw_files(_make_small_state(), target)
+        _emit_state(_make_small_state(), target)
         assert target.is_dir()
         assert (target / ACCOUNTS_FILENAME).exists()
 
     def test_result_paths_and_counts(self, tmp_path) -> None:
         """RawEmissionResult reports correct paths and row counts."""
-        result = emit_raw_files(_make_small_state(), tmp_path)
+        result = _emit_state(_make_small_state(), tmp_path)
         assert isinstance(result, RawEmissionResult)
         assert result.output_dir == tmp_path
         assert result.accounts_path == tmp_path / ACCOUNTS_FILENAME
@@ -117,7 +138,7 @@ class TestRawEmissionHeaders:
 
     def test_accounts_header(self, tmp_path) -> None:
         """accounts.csv header matches the Account contract fields."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         rows = _read_rows(tmp_path / ACCOUNTS_FILENAME)
         assert rows[0] == [
             "account_id", "account_ordinal", "billing_cycle_day",
@@ -126,7 +147,7 @@ class TestRawEmissionHeaders:
 
     def test_subscribers_header(self, tmp_path) -> None:
         """subscribers.csv header matches the Subscriber contract fields."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         rows = _read_rows(tmp_path / SUBSCRIBERS_FILENAME)
         assert rows[0] == [
             "subscriber_id", "account_id", "subscriber_ordinal",
@@ -135,7 +156,7 @@ class TestRawEmissionHeaders:
 
     def test_subscriptions_header(self, tmp_path) -> None:
         """subscriptions.csv header matches the Subscription contract fields."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         rows = _read_rows(tmp_path / SUBSCRIPTIONS_FILENAME)
         assert rows[0] == [
             "subscription_id", "subscriber_id", "item_type", "item_code",
@@ -151,7 +172,7 @@ class TestRawEmissionContent:
     def test_account_rows_match_state(self, tmp_path) -> None:
         """accounts.csv data rows mirror the state accounts in order."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         rows = _read_rows(tmp_path / ACCOUNTS_FILENAME)[1:]
         expected = [
             [
@@ -168,7 +189,7 @@ class TestRawEmissionContent:
     def test_subscriber_bool_serialization(self, tmp_path) -> None:
         """The active bool serializes as the stdlib 'True' text."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         rows = _read_rows(tmp_path / SUBSCRIBERS_FILENAME)[1:]
         # active column is the last column for every subscriber row.
         assert all(row[-1] == "True" for row in rows)
@@ -176,7 +197,7 @@ class TestRawEmissionContent:
     def test_subscription_rows_match_state(self, tmp_path) -> None:
         """subscriptions.csv data rows mirror the state subscriptions."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         rows = _read_rows(tmp_path / SUBSCRIPTIONS_FILENAME)[1:]
         expected = [
             [
@@ -195,7 +216,7 @@ class TestRawEmissionContent:
     def test_open_end_month_is_empty_field(self, tmp_path) -> None:
         """A None end_month serializes as an empty CSV field."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         rows = _read_rows(tmp_path / SUBSCRIPTIONS_FILENAME)[1:]
         # Every subscription in the small state is active (end_month None).
         end_month_index = 5
@@ -204,7 +225,7 @@ class TestRawEmissionContent:
     def test_row_order_is_state_order(self, tmp_path) -> None:
         """Row order follows the state tuple order, not a re-sort."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         rows = _read_rows(tmp_path / ACCOUNTS_FILENAME)[1:]
         emitted_ids = [row[0] for row in rows]
         assert emitted_ids == [a.account_id for a in state.accounts]
@@ -217,7 +238,7 @@ class TestRawEmissionManifest:
 
     def test_manifest_counts_match_rows(self, tmp_path) -> None:
         """Manifest record counts equal the data-row counts per file."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         manifest = json.loads(
             (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
         )
@@ -229,11 +250,12 @@ class TestRawEmissionManifest:
             ACCOUNTS_FILENAME: 2,
             SUBSCRIBERS_FILENAME: 2,
             SUBSCRIPTIONS_FILENAME: 3,
+            LIFECYCLE_EVENTS_FILENAME: 0,
         }
 
     def test_manifest_counts_match_data_rows(self, tmp_path) -> None:
         """Manifest counts equal the actual CSV data-row counts."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         manifest = json.loads(
             (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
         )
@@ -254,7 +276,7 @@ class TestRawEmissionRerun:
     def test_rerun_byte_identical(self, tmp_path) -> None:
         """Re-emitting the same state produces byte-identical files."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         first = {
             name: (tmp_path / name).read_bytes()
             for name in (
@@ -262,7 +284,7 @@ class TestRawEmissionRerun:
                 SUBSCRIPTIONS_FILENAME, MANIFEST_FILENAME,
             )
         }
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         second = {
             name: (tmp_path / name).read_bytes()
             for name in first
@@ -274,13 +296,13 @@ class TestRawEmissionRerun:
         (tmp_path / ACCOUNTS_FILENAME).write_text(
             "garbage,data\n1,2\n", encoding="utf-8",
         )
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         rows = _read_rows(tmp_path / ACCOUNTS_FILENAME)
         assert rows[0][0] == "account_id"
 
     def test_unix_newlines(self, tmp_path) -> None:
         """CSV files use Unix newlines, not CRLF."""
-        emit_raw_files(_make_small_state(), tmp_path)
+        _emit_state(_make_small_state(), tmp_path)
         raw = (tmp_path / ACCOUNTS_FILENAME).read_bytes()
         assert b"\r\n" not in raw
         assert b"\n" in raw
@@ -293,7 +315,7 @@ class TestRawEmissionEmptyState:
 
     def test_empty_state_header_only(self, tmp_path) -> None:
         """Each CSV has its header and zero data rows."""
-        emit_raw_files(_make_empty_state(), tmp_path)
+        _emit_state(_make_empty_state(), tmp_path)
         for name in (
             ACCOUNTS_FILENAME, SUBSCRIBERS_FILENAME, SUBSCRIPTIONS_FILENAME,
         ):
@@ -302,7 +324,7 @@ class TestRawEmissionEmptyState:
 
     def test_empty_state_manifest_zero_counts(self, tmp_path) -> None:
         """The manifest reports zero records for every file."""
-        emit_raw_files(_make_empty_state(), tmp_path)
+        _emit_state(_make_empty_state(), tmp_path)
         manifest = json.loads(
             (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
         )
@@ -312,7 +334,7 @@ class TestRawEmissionEmptyState:
 
     def test_empty_state_result_counts(self, tmp_path) -> None:
         """RawEmissionResult counts are all zero for an empty state."""
-        result = emit_raw_files(_make_empty_state(), tmp_path)
+        result = _emit_state(_make_empty_state(), tmp_path)
         assert result.accounts_written == 0
         assert result.subscribers_written == 0
         assert result.subscriptions_written == 0
@@ -329,7 +351,7 @@ class TestRawEmissionNoMutation:
         accounts_before = state.accounts
         subscribers_before = state.subscribers
         subscriptions_before = state.subscriptions
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         assert state.accounts is accounts_before
         assert state.subscribers is subscribers_before
         assert state.subscriptions is subscriptions_before
@@ -337,5 +359,125 @@ class TestRawEmissionNoMutation:
     def test_state_equal_after_emit(self, tmp_path) -> None:
         """The state compares equal to a freshly built identical state."""
         state = _make_small_state()
-        emit_raw_files(state, tmp_path)
+        _emit_state(state, tmp_path)
         assert state == _make_small_state()
+
+
+# ---- lifecycle event emission (Slice 3) ----
+
+
+def _cancellation_event(label: str, month: int = 2) -> LifecycleEvent:
+    """Build a labelled subscriber_cancelled lifecycle event."""
+    return LifecycleEvent.create_validated(
+        f"event-{label}",
+        month,
+        SUBSCRIBER_CANCELLED_EVENT_TYPE,
+        f"acct-{label}",
+        f"subscriber-{label}",
+        "BASIC",
+    )
+
+
+def _result_with_events(
+    *events: LifecycleEvent,
+) -> SimulationResult:
+    """Build a SimulationResult with the small state and given events."""
+    return SimulationResult.create_validated(
+        _make_small_state(), tuple(events),
+    )
+
+
+class TestRawEmissionLifecycleEvents:
+    """lifecycle_events.csv is written from the simulation result (D40)."""
+
+    def test_lifecycle_events_file_created(self, tmp_path) -> None:
+        """The lifecycle events CSV is written even when events are empty."""
+        emit_raw_files(_result_with_events(), tmp_path)
+        assert (tmp_path / LIFECYCLE_EVENTS_FILENAME).exists()
+
+    def test_empty_events_writes_header_only(self, tmp_path) -> None:
+        """An empty event log writes the header row and nothing else."""
+        emit_raw_files(_result_with_events(), tmp_path)
+        rows = _read_rows(tmp_path / LIFECYCLE_EVENTS_FILENAME)
+        assert rows == [list(LIFECYCLE_EVENT_COLUMNS)]
+
+    def test_header_is_lifecycle_event_field_order(self, tmp_path) -> None:
+        """The CSV header matches LifecycleEvent field order exactly."""
+        emit_raw_files(_result_with_events(), tmp_path)
+        rows = _read_rows(tmp_path / LIFECYCLE_EVENTS_FILENAME)
+        assert tuple(rows[0]) == LIFECYCLE_EVENT_COLUMNS
+
+    def test_event_rows_match_result_order(self, tmp_path) -> None:
+        """Data rows mirror result.lifecycle_events in declared order."""
+        events = (
+            _cancellation_event("alpha", month=2),
+            _cancellation_event("bravo", month=3),
+            _cancellation_event("charlie", month=3),
+        )
+        emit_raw_files(_result_with_events(*events), tmp_path)
+        rows = _read_rows(tmp_path / LIFECYCLE_EVENTS_FILENAME)[1:]
+        expected = [
+            [
+                e.event_id,
+                str(e.simulation_month),
+                e.event_type,
+                e.account_id,
+                e.subscriber_id,
+                e.plan_code,
+            ]
+            for e in events
+        ]
+        assert rows == expected
+
+    def test_manifest_includes_lifecycle_events(self, tmp_path) -> None:
+        """The manifest entry for lifecycle_events.csv lists its record count."""
+        events = (
+            _cancellation_event("alpha"),
+            _cancellation_event("bravo"),
+        )
+        emit_raw_files(_result_with_events(*events), tmp_path)
+        manifest = json.loads(
+            (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+        names_to_counts = {
+            entry["name"]: entry["record_count"]
+            for entry in manifest["files"]
+        }
+        assert names_to_counts[LIFECYCLE_EVENTS_FILENAME] == len(events)
+
+    def test_manifest_lists_all_four_data_files(self, tmp_path) -> None:
+        """All four data files appear in the manifest in declared order."""
+        emit_raw_files(_result_with_events(), tmp_path)
+        manifest = json.loads(
+            (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+        names = [entry["name"] for entry in manifest["files"]]
+        assert names == [
+            ACCOUNTS_FILENAME,
+            SUBSCRIBERS_FILENAME,
+            SUBSCRIPTIONS_FILENAME,
+            LIFECYCLE_EVENTS_FILENAME,
+        ]
+
+    def test_result_carries_lifecycle_events_path_and_count(
+        self, tmp_path,
+    ) -> None:
+        """RawEmissionResult exposes the new lifecycle event fields."""
+        events = (_cancellation_event("alpha"),)
+        result = emit_raw_files(_result_with_events(*events), tmp_path)
+        assert result.lifecycle_events_path == (
+            tmp_path / LIFECYCLE_EVENTS_FILENAME
+        )
+        assert result.lifecycle_events_written == 1
+
+    def test_rerun_byte_identical(self, tmp_path) -> None:
+        """Two runs with the same result produce a byte-identical CSV."""
+        events = (
+            _cancellation_event("alpha", month=2),
+            _cancellation_event("bravo", month=3),
+        )
+        emit_raw_files(_result_with_events(*events), tmp_path)
+        first = (tmp_path / LIFECYCLE_EVENTS_FILENAME).read_bytes()
+        emit_raw_files(_result_with_events(*events), tmp_path)
+        second = (tmp_path / LIFECYCLE_EVENTS_FILENAME).read_bytes()
+        assert first == second

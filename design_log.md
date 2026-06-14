@@ -1651,3 +1651,192 @@ or logging/tracing framework is introduced.
   simulation state alone, at which point the
   :class:`ActionResult` shape is amended here under its own
   decision (D38 already records this revisit hook).
+
+### D40. Deterministic Monthly Driver Supports Cancellation Only
+
+Slice 3 wires the cancellation chain into a complete end-to-end path:
+the starter population is advanced through simulation months
+``2 .. config.months``, deterministically selected cancellations are
+applied, and the final state plus ordered lifecycle event log is
+emitted alongside the existing raw CSV artifacts.
+
+This decision records the product semantics introduced by that work
+— what the monthly driver does, what it deliberately does not do,
+and where the boundary sits for later slices.
+
+#### Month-1 Initialisation and Months 2..N Advancement
+
+The starter population produced by ``build_population`` (D33) is the
+month-1 state by convention.  The monthly driver advances state
+through simulation months ``range(2, config.months + 1)``, which is
+empty when ``config.months == 1``.  A one-month scenario therefore
+performs no lifecycle transitions and returns a
+:class:`SimulationResult` whose ``lifecycle_events`` tuple is empty
+and whose ``state`` is the starter state itself.
+
+#### Month-Start Intent Selection
+
+Within a month, the driver snapshots the current threaded state and
+calls :func:`behavior_model.choose_cancellation_intents` exactly
+once against that snapshot.  All cancellation intents for the month
+are chosen from the month-start state before any of them is
+applied; within-month state mutations cannot influence selection.
+
+#### Stable Subscriber Ordering and One Draw Per Eligible Subscriber
+
+Selection walks :attr:`SimulationState.subscribers` in stable order
+and draws exactly once per subscriber that is active at the start
+of the month, regardless of ``prob_cancel``.  The
+:class:`RandomStream` position therefore advances by exactly the
+active-subscriber count each month, and the resulting event order
+is month-major and stable-subscriber-order within each month.
+
+#### No Draws for Inactive Subscribers
+
+A subscriber that is not active at the start of the month is
+skipped without drawing.  Subscribers cancelled in an earlier month
+remain inactive in every later month and therefore never trigger
+another draw or another intent.  A subscriber is consequently
+cancelled at most once across the whole run.
+
+#### Cancellation-Only Monthly Scope and Fail-Loud Unsupported Behaviour
+
+This slice supports cancellation as the only monthly transition.
+The driver calls :func:`behavior_model.validate_cancellation_only_scope`
+before the month loop; any non-zero value for ``prob_upgrade``,
+``prob_downgrade``, ``prob_feature_remove``, ``prob_reactivate``,
+or ``prob_payment_failure``, and any populated coherency group
+(``price_increase`` or ``duplicate_invoice_line_defect``), is
+rejected loudly with :class:`InvalidRequestError`.
+``prob_feature_add`` is explicitly allowed because it governs
+starter-population construction, not monthly transitions.
+
+Rejection happens before any monthly cancellation-selection draws
+are consumed, so a rejected configuration never silently advances
+the random stream during monthly simulation.  The CLI consumes
+starter-population draws via :func:`build_population` before
+:func:`run_monthly_simulation` runs this validation, so those
+earlier draws are not in the scope of this guarantee.
+
+#### SimulationResult
+
+:class:`SimulationResult` is the result envelope for a full run: a
+frozen, validated record carrying the final
+:class:`SimulationState` and the ordered ``lifecycle_events``
+tuple.  It is distinct from :class:`ActionResult` (the per-action
+envelope from Slice 1) — the simulation-level result is the
+accumulation of every action-level result the chain produced — and
+its structural validation rejects wrong-type fields and bad
+elements via the same ``_Validated`` vocabulary as the rest of the
+project.
+
+#### Final-State Raw Extracts Plus Ordered Lifecycle-Event Emission
+
+Raw emission was extended to take a :class:`SimulationResult` and
+serialise four CSV files plus a manifest:
+
+* ``accounts.csv`` — one row per Account in the final state;
+* ``subscribers.csv`` — one row per Subscriber in the final state
+  (subscribers cancelled during the run appear as inactive rows
+  with their retained ``plan_code``);
+* ``subscriptions.csv`` — one row per effective-dated Subscription
+  in the final state, including subscriptions that ended during
+  the run;
+* ``lifecycle_events.csv`` — one row per emitted lifecycle
+  transition, with the column order set explicitly from the
+  :class:`LifecycleEvent` field order;
+* ``manifest.json`` — one document per emission batch, with an
+  entry per data file (now including ``lifecycle_events.csv`` and
+  its record count).
+
+Row order is the result's tuple order; rerunning emission on the
+same :class:`SimulationResult` produces byte-identical files.  The
+input result is not mutated.
+
+#### Single Seeded RandomStream for the Whole Run
+
+The CLI constructs one :class:`RandomStream` from ``config.seed``
+and threads it through both :func:`build_population` and
+:func:`run_monthly_simulation`.  The stream position therefore
+evolves deterministically across the run, and the full set of
+emitted artifacts is byte-identical for a given ``(config, seed,
+code version)``.
+
+#### Deliberately Left for Later Slices
+
+Other monthly transitions (upgrade, downgrade, reactivation,
+feature change), account closure, invoices, payments, usage,
+adjustments, hidden truth, PostgreSQL load, dbt models, distributed
+execution, and generic simulation infrastructure are out of scope
+for this slice.  No registry, dispatcher, plugin system,
+transaction framework, or scheduler is introduced; the driver is a
+plain ordered loop over months that delegates to existing
+components.
+
+#### Rationale
+
+The narrow scope is deliberate.  A monthly driver that supports one
+transition end-to-end forces the project to wire up the simulation
+loop, the raw emission of lifecycle events, the CLI integration,
+and the manifest grain — all of which are reused for every
+subsequent monthly transition.  Adding a second transition in the
+same slice would compound risk without earning new architectural
+ground.  The fail-loud rejection of unsupported configuration knobs
+makes that scope visible at the boundary, not hidden by a default
+of zero.
+
+The single :class:`RandomStream` shared across population
+construction and monthly simulation is the simplest pattern that
+preserves determinism without forcing the CLI or its callers to
+reason about substreams.  When substreams become necessary — for
+example, to make starter-population and monthly draws independently
+reseedable — the seed-injection point is the CLI, and the change
+is recorded as its own decision.
+
+The :class:`SimulationResult` envelope is a distinct type from
+:class:`ActionResult` even though they share the same shape: the
+simulation-level cumulative result and the action-level
+intermediate result are different concepts that happen to factor
+into the same fields at the moment.  When implementation pressure
+makes them diverge (e.g., the simulation result needs a
+hidden-truth section or a run-level summary), the shape is amended
+on the appropriate envelope without bleeding into the other.
+
+#### Alternatives Considered
+
+* *Drive monthly simulation from the existing chain runner directly.*
+  Rejected: the chain runner operates on a single intent; the
+  monthly driver must select intents from a month-start state and
+  apply them in order.  Selection is a different responsibility
+  that lives at a higher level.
+* *Make* :class:`SimulationResult` *an alias for* :class:`ActionResult`.
+  Rejected: the two are conceptually distinct (run-level vs
+  action-level) even when their fields happen to match, and
+  collapsing them now would erase the boundary the moment one of
+  them needs to diverge.
+* *Treat unsupported probabilities as zero by default and ignore
+  them silently.*  Rejected: a non-zero ``prob_upgrade`` in a
+  scenario file is a user request that the simulator must either
+  honour or refuse.  Silently ignoring it would hide configuration
+  bugs and reduce trust in the simulator's outputs.
+* *Use a separate seeded stream per stage.*  Rejected for this
+  slice: a single stream is sufficient for the cancellation-only
+  scope, and substreams would predeclare structure (per-stage
+  seeds) that no concrete pressure demands yet.
+
+#### Revisit When
+
+* A second monthly transition (upgrade, downgrade, reactivation,
+  feature change) is ready to commit.  At that point the fail-loud
+  list shrinks here, ``choose_*`` grows to cover the new
+  selection, and the driver's per-month loop is extended.
+* Determinism requirements force per-stage RNG streams — for
+  example, to keep starter-population draws stable while changing
+  monthly behaviour.  At that point the seed-injection point is
+  refined here.
+* A reactivation transition arrives: it will need to redefine the
+  current "no draws for inactive subscribers" rule, and the change
+  is recorded here rather than introduced silently.
+* The :class:`SimulationResult` shape needs to grow (hidden truth,
+  run-level summary, billing summaries) — the new fields are
+  decided here rather than added quietly.
