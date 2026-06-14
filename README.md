@@ -10,28 +10,33 @@ The central claim: **if the truth is known, metric reconstruction can be tested.
 
 ## Current Status
 
-Runnable local MVP baseline. Billaroo has grown from an early skeleton into a working front-of-pipeline: it deterministically builds a starter population and emits it as raw operational files through a one-command CLI. The downstream half of the pipeline — lifecycle simulation, billing, and the database/dbt reconstruction layer — is not yet built.
+Runnable local pipeline. Billaroo deterministically builds a starter population, advances it through every configured simulation month, applies deterministic subscriber cancellations through explicit ordered semantic action chains, and emits the final account, subscriber, and subscription state alongside an ordered lifecycle-event log as raw operational CSV files plus a JSON manifest. A single `RandomStream` is seeded once and threaded through both stages, so the full set of emitted artifacts is byte-identical for a given `(scenario, seed, code version)`.
+
+Cancellation is the only lifecycle transition currently implemented. The downstream half of the pipeline — billing, payments, hidden truth, PostgreSQL load, dbt models, metric reconciliation — is not yet built.
 
 Implemented today:
 
 - `model/money_model.py` — Decimal money helpers (rule 13)
-- `contracts/id_contracts.py` and `contracts/` — deterministic IDs and frozen domain contracts (account, subscriber, subscription, catalog) with structural and semantic validation
+- `contracts/id_contracts.py` and `contracts/` — deterministic IDs and frozen domain contracts (account, subscriber, subscription, lifecycle event, catalog) with structural and semantic validation
 - `model/` builders — `build_account`, `build_subscriber`, `build_plan_subscription`, `build_feature_subscription`, `build_catalog`, `build_default_catalog`
 - `simulate/random_stream.py` — centralized seeded randomness (rule 14)
 - `simulate/scenario_config.py` — frozen scenario config with structural validation and coherency-group enforcement (rules 3, 5)
 - `simulate/simulation_state.py` + `simulate/population_builder.py` — a deterministic starter-population builder (one account → one subscriber → one plan subscription, optionally one feature subscription, all in month 1)
-- `emit/raw_file_emitter.py` + `emit/manifest_emitter.py` — raw CSV emission plus a JSON manifest, with declared grain per emitted file (rule 15)
-- `synthetic_billing_cli.py` — a thin demo CLI wiring the baseline path together
+- `simulate/behavior_model.py` — deterministic cancellation selection: one draw per active subscriber per month, in stable subscriber order, against the month-start state
+- `simulate/month_driver.py` — monthly advancement through months 2..N, with month-start intent selection and ordered chain application
+- `simulate/simulation_result.py` — frozen, validated record carrying the final `SimulationState` and the ordered `subscriber_cancelled` event log
+- `actions/lifecycle_actions.py` + `actions/action_chain.py` + `actions/action_protocols.py` — `CancelSubscriberIntent`, the two-action cancellation chain, and the ordered chain applicator
+- `emit/raw_file_emitter.py` + `emit/manifest_emitter.py` — raw CSV emission for final-state accounts, subscribers, subscriptions, ordered lifecycle events, plus a JSON manifest with declared grain per emitted file (rule 15)
+- `synthetic_billing_cli.py` — a thin demo CLI wiring scenario load → catalog → population → monthly simulation → raw emission
 - `test/test_file_basename_uniqueness.py` — project-wide guard for rule 18
-- `configs/baseline_scenario.yaml` — minimal demo scenario
+- `configs/baseline_scenario.yaml` — minimal demo scenario (12 months, 20 starter accounts, `prob_cancel=0.04`)
 - `scripts/checkin.sh` and `.github/workflows/checkin.yml` — a local quality-gate script and a CI workflow that runs it
 
 Not yet implemented (and not faked or stubbed elsewhere in the tree):
 
-- monthly lifecycle simulation: cancels, upgrades, downgrades, reactivations, feature changes after month 1
-- semantic action chains
+- monthly lifecycle transitions other than cancellation: upgrades, downgrades, reactivations, feature changes
 - invoices, invoice lines, payments, usage events, adjustments
-- a hidden-truth ledger (there is nothing to hide yet)
+- a hidden-truth ledger
 - the PostgreSQL loader
 - dbt models and the metric-reconstruction / reconciliation layer
 
@@ -53,17 +58,21 @@ The intended architecture is a billing analytics flight simulator. The simulator
 
 This is not a churn-modeling toy CSV. It is a billing analytics simulator built to send architectural signals: deterministic synthetic data generation, semantic action chains, declared grain on every emitted table, clean separation between simulation and downstream analytics, and known-answer validation.
 
-**Current capability versus planned architecture.** Today Billaroo generates only the *starter population* — the initial state of the simulator before any monthly lifecycle runs — and emits it as raw files:
+**Current capability versus planned architecture.** Today Billaroo runs the deterministic cancellation pipeline end to end and emits five total artifacts — four raw operational CSV extracts and one JSON manifest:
 
 ```text
 build/raw/
-    accounts.csv
-    subscribers.csv
-    subscriptions.csv
-    manifest.json
+    accounts.csv            # one row per Account in the final state
+    subscribers.csv         # one row per Subscriber in the final state
+    subscriptions.csv       # one row per effective-dated Subscription
+    lifecycle_events.csv    # one row per emitted subscriber_cancelled event,
+                            # ordered month-major and by subscriber within month
+    manifest.json           # one entry per data file with its record count
 ```
 
-The hidden truth ledger, invoices and payments, the PostgreSQL loader, the dbt reconstruction layer, and the validation comparison are **planned architecture, not current capability**. The roadmap is recorded honestly in the design log; nothing downstream of raw emission exists in the committed code yet.
+A cancelled subscriber appears in `subscribers.csv` as an inactive row that retains its last assigned `plan_code`; the plan and any feature subscriptions it held appear in `subscriptions.csv` with `end_month` set to the cancellation month and status `ended`. Subscribers active at the end of the run appear as active rows with open-ended subscriptions.
+
+The hidden truth ledger, invoices and payments, the PostgreSQL loader, the dbt reconstruction layer, the validation comparison, and all non-cancellation lifecycle transitions are **planned architecture, not current capability**. The roadmap is recorded honestly in the design log; nothing downstream of raw emission exists in the committed code yet.
 
 ## Quickstart
 
@@ -77,10 +86,10 @@ pytest
 To run a specific test file:
 
 ```bash
-pytest src/synthetic_billing/simulate/test/test_scenario_config.py -v
+pytest src/synthetic_billing/simulate/test/test_month_driver.py -v
 ```
 
-To run the baseline generate → raw-emit demo, which reads `configs/baseline_scenario.yaml` and writes raw files under `build/raw`:
+To run the baseline generate-and-simulate demo, which reads `configs/baseline_scenario.yaml`, advances the starter population through months 2..12 with deterministic cancellations, and writes raw files under `build/raw`:
 
 ```bash
 python -m synthetic_billing.synthetic_billing_cli
@@ -102,10 +111,14 @@ Output directory: build/raw
 Accounts written: 20
 Subscribers written: 20
 Subscriptions written: 20
+Lifecycle events written: 4
+Lifecycle events file: build/raw/lifecycle_events.csv
 Manifest: build/raw/manifest.json
 ```
 
-A single check-in script runs every committed quality gate — compileall, pytest, 100% branch coverage, pylint, and a CLI smoke test against a temporary directory (it never dirties `build/raw` or the working tree):
+The four lifecycle events are deterministic: the baseline scenario is `seed=42`, `months=12`, `starting_accounts=20`, `prob_cancel=0.04`, and the same `(config, seed, code version)` always produces the same five files, byte-for-byte. The Account and Subscriber tuple lengths do not change during the run — cancellation deactivates a subscriber and ends its subscriptions, but never removes rows.
+
+A single check-in script runs every committed quality gate — compileall, pytest, 100% branch coverage, pylint, and a CLI smoke test against a temporary directory. The smoke step verifies that `lifecycle_events.csv` contains at least one data row and that the manifest's reported count for that file agrees with the CSV row count. The smoke test never dirties `build/raw` or the working tree:
 
 ```bash
 scripts/checkin.sh
@@ -125,7 +138,7 @@ The design log also establishes precedent. Earlier decisions inform future decis
 
 Generated code must satisfy the project constitution. Review is separated into at least two concerns: whether the code is functionally correct, and whether it preserves the intended architecture. Constitutional adherence is neither an ad hoc process nor an informal preference. It is a documented and binding review target. When implementation pressure reveals an incomplete decision, the original decision is preserved and a refining decision is added. When generated code violates the constitution, the human architect either rejects the generation or records an explicit design-log amendment that changes the governing rule. The constitution does not bend silently. The history of the design is itself a versioned project artifact.
 
-This methodology has been applied to working systems with non-trivial architectural structure. Public demonstrations include the NYC Cab Experiment Platform, a medallion-style experiment pipeline built on open data engineering technologies under a 61-decision design log with strict data quality gates. The Billaroo synthetic data generator project refines the governance pattern developed during the NYC Cab Experiment and incorporates its practical lessons into a more formalized, repeatable process. Billaroo began with a governing 23-rule design constitution and has grown a 37-decision design log through its early stages.
+This methodology has been applied to working systems with non-trivial architectural structure. Public demonstrations include the NYC Cab Experiment Platform, a medallion-style experiment pipeline built on open data engineering technologies under a 61-decision design log with strict data quality gates. The Billaroo synthetic data generator project refines the governance pattern developed during the NYC Cab Experiment and incorporates its practical lessons into a more formalized, repeatable process. Billaroo began with a governing 23-rule design constitution and has grown a 40-decision design log through its early stages.
 
 Billaroo has two goals. The first is to deliver a tunable synthetic subscriber billing data generator. The second is to demonstrate a reliable AI-first methodology that controls AI-generated scope creep. The resulting methods are intended to be portable across project types. The specific technologies may change, but the core pattern remains stable: durable design constraints, explicit decision history, separated model responsibilities, adversarial review, executable validation, and human ownership of architecture and acceptance.
 

@@ -1,21 +1,39 @@
 Demo Workflow
 =============
 
-The v0 demo has four stages.
+The full v0 demo has four stages.  Stage 1 is implemented and
+runnable today; stages 2 through 4 are planned architecture.
 
-1. Generate Raw Operational Data
---------------------------------
+1. Generate Raw Operational Data  (implemented)
+------------------------------------------------
 
 .. code-block:: bash
 
-    synthetic-billing generate \
-        --scenario configs/baseline_scenario.yaml \
-        --out build/raw
+    python -m synthetic_billing.synthetic_billing_cli \
+        --config configs/baseline_scenario.yaml \
+        --output-dir build/raw
 
-The generator emits raw monthly CSV files and hidden truth files.
+The CLI builds the deterministic starter population, advances it
+through every configured simulation month, applies deterministic
+subscriber cancellations through the ordered semantic action chain,
+and emits five total artifacts under the output directory — four
+raw operational CSV extracts and one JSON manifest:
 
-2. Load Raw Data Into PostgreSQL
---------------------------------
+.. code-block:: text
+
+    accounts.csv          # one row per Account in the final state
+    subscribers.csv       # one row per Subscriber in the final state
+    subscriptions.csv     # one row per effective-dated Subscription
+    lifecycle_events.csv  # ordered subscriber_cancelled events
+    manifest.json         # one entry per data file with its record count
+
+A single seeded ``RandomStream`` is threaded through both starter-
+population construction and monthly simulation, so the same
+``(scenario, seed, code version)`` always produces byte-identical
+artifacts.
+
+2. Load Raw Data Into PostgreSQL  (planned)
+-------------------------------------------
 
 .. code-block:: bash
 
@@ -23,21 +41,23 @@ The generator emits raw monthly CSV files and hidden truth files.
         --raw build/raw \
         --schema synthetic_billing_raw
 
-The loader creates or replaces raw PostgreSQL tables for the generated files.
+The loader will create or replace raw PostgreSQL tables for the
+generated files.  Not implemented.
 
-3. Run dbt
-----------
+3. Run dbt  (planned)
+---------------------
 
 .. code-block:: bash
 
     cd dbt/subscriber_billing
     dbt build --target local_postgres
 
-dbt stages raw records, reconstructs lifecycle state, reconciles billing
-records, and builds monthly customer metrics.
+dbt will stage raw records, reconstruct lifecycle state, reconcile
+billing records, and build monthly customer metrics.  Not
+implemented.
 
-4. Validate Reconstructed Metrics
----------------------------------
+4. Validate Reconstructed Metrics  (planned)
+--------------------------------------------
 
 .. code-block:: bash
 
@@ -45,7 +65,8 @@ records, and builds monthly customer metrics.
         --truth build/raw \
         --schema synthetic_billing_marts
 
-Validation compares dbt-reconstructed metrics against hidden simulator truth.
-
-The validation step exists to prove that analytic truth was reconstructed from
-raw operational records rather than painted onto the final mart.
+Validation will compare dbt-reconstructed metrics against hidden
+simulator truth.  The validation step exists to prove that analytic
+truth was reconstructed from raw operational records rather than
+painted onto the final mart.  Not implemented; the hidden-truth
+ledger does not yet exist.

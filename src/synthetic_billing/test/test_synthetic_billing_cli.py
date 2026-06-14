@@ -69,28 +69,36 @@ def _manifest_counts(output_dir: Path) -> dict[str, int]:
 
 
 def _read_all_bytes(output_dir: Path) -> dict[str, bytes]:
-    """Return ``{filename: bytes}`` for all four emitted artifacts."""
+    """Return ``{filename: bytes}`` for all five emitted artifacts."""
     names = (
         ACCOUNTS_FILENAME, SUBSCRIBERS_FILENAME,
-        SUBSCRIPTIONS_FILENAME, MANIFEST_FILENAME,
+        SUBSCRIPTIONS_FILENAME, LIFECYCLE_EVENTS_FILENAME,
+        MANIFEST_FILENAME,
     )
     return {name: (output_dir / name).read_bytes() for name in names}
 
 
 def _independent_counts(config_path: Path) -> tuple[int, int, int]:
-    """Build the population independently and return tuple lengths.
+    """Build the full pipeline independently and return final-state tuple lengths.
 
-    Mirrors the CLI's orchestration so a test can assert the CLI did
-    not duplicate or alter the population logic.
+    Mirrors the CLI's orchestration — population construction followed
+    by monthly cancellation simulation — so a test can cross-check the
+    manifest's final-state tuple counts against the lengths produced
+    by an independent complete pipeline run.  The cross-check does not
+    discriminate between the CLI emitting final-state versus
+    starter-state values: in the current cancellation-only feature
+    set, cancellation deactivates a subscriber and ends its
+    subscriptions but never removes rows, so the starter-state and
+    final-state tuple lengths happen to be equal.
     """
     config = load_scenario_config(config_path)
-    state = build_population(
-        config, build_default_catalog(), RandomStream(config.seed),
-    )
+    rng = RandomStream(config.seed)
+    starter = build_population(config, build_default_catalog(), rng)
+    result = run_monthly_simulation(starter, config, rng)
     return (
-        len(state.accounts),
-        len(state.subscribers),
-        len(state.subscriptions),
+        len(result.state.accounts),
+        len(result.state.subscribers),
+        len(result.state.subscriptions),
     )
 
 
@@ -104,11 +112,12 @@ class TestCliSuccess:
         assert cli.main(_baseline_args(tmp_path)) == 0
 
     def test_emits_all_files(self, tmp_path) -> None:
-        """All four raw artifacts are written to the output directory."""
+        """All five raw artifacts are written to the output directory."""
         cli.main(_baseline_args(tmp_path))
         assert (tmp_path / ACCOUNTS_FILENAME).exists()
         assert (tmp_path / SUBSCRIBERS_FILENAME).exists()
         assert (tmp_path / SUBSCRIPTIONS_FILENAME).exists()
+        assert (tmp_path / LIFECYCLE_EVENTS_FILENAME).exists()
         assert (tmp_path / MANIFEST_FILENAME).exists()
 
     def test_manifest_counts_match_independent_build(self, tmp_path) -> None:
@@ -139,7 +148,10 @@ class TestCliSummary:
     def test_summary_includes_output_dir_and_counts(
         self, tmp_path, capsys
     ) -> None:
-        """Summary names the output directory and the three counts."""
+        """Summary names the output directory and the three final-state record counts.
+
+        The lifecycle-event count is covered by a separate test below.
+        """
         cli.main(_baseline_args(tmp_path))
         out = capsys.readouterr().out
         accounts, subscribers, subscriptions = _independent_counts(
