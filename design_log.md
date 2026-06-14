@@ -1840,3 +1840,120 @@ on the appropriate envelope without bleeding into the other.
 * The :class:`SimulationResult` shape needs to grow (hidden truth,
   run-level summary, billing summaries) — the new fields are
   decided here rather than added quietly.
+
+### D41. Validated Records Have One Production Construction Boundary
+
+Billaroo's typed records inherit from the ``_Validated`` mix-in
+(D30, D31), which provides ``create_validated(...)`` — a classmethod
+that runs constructor type checks and then structural validation.
+This decision makes the construction convention explicit and adds a
+source-level guard that enforces it, without changing any runtime
+validation behaviour.
+
+#### The Convention
+
+* Production code builds a ``_Validated`` record through
+  ``ClassName.create_validated(...)`` or an established model builder
+  (``build_account``, ``build_subscriber``, ``build_plan_subscription``,
+  ``build_feature_subscription``, ``build_catalog``,
+  ``build_default_catalog``, ``build_subscriber_cancelled_event``).
+  Direct dataclass construction (``ClassName(...)``) is not a
+  supported production path.
+* Direct construction is a test-only escape hatch.  A test that needs
+  a deliberately invalid instance — to prove that ``validate()`` or
+  ``is_valid()`` rejects it — constructs the dataclass directly,
+  bypassing ``create_validated``'s constructor type checks.
+* A directly constructed invalid test object is expected to be
+  type-correct at the field level: the invalidity it demonstrates
+  lives in structural or value rules, not in argument types.  The
+  exception is a subclass whose ``_structural_checks`` adds its own
+  defensive ``isinstance`` re-checks; those exist so that a
+  wrong-typed field is reported as a violation rather than raising
+  ``AttributeError`` during iteration, keeping violations safely
+  observable under constitution rule 23.
+* ``validate()`` is structural-only.  It checks structural and value
+  invariants of an already type-correct instance and does not replay
+  the constructor type checks declared in ``_type_check_specs``.
+
+#### Enforcement
+
+A project-level test (``test_validated_construction_guard``) scans
+non-test production Python source for direct constructor calls to
+``_Validated`` subclasses.  It:
+
+* discovers the set of ``_Validated`` subclasses by parsing the source
+  tree (no manually duplicated class list), so new validated records
+  are covered automatically;
+* permits ``ClassName.create_validated(...)`` (an attribute call, not
+  a direct constructor call);
+* permits direct construction in test source (files named ``test_*``
+  or living under a ``test`` package directory);
+* reports the offending file, line number, and class name.
+
+The guard parses straightforward source via the standard library
+``ast`` module.  It deliberately does not resolve import aliases,
+reflection, dynamic imports, ``dataclasses.replace(...)``, or
+obscured construction.  It is a small repository hygiene check, not a
+general Python name resolver or static-analysis framework.
+
+At the time of this decision the guard finds zero direct-construction
+violations in production source: every validated record is already
+built through ``create_validated`` or a model builder.  The guard
+therefore documents and protects an existing convention rather than
+forcing a migration.
+
+#### Rationale
+
+The convention was already followed everywhere in production code,
+but it lived only in module docstrings and reviewer attention.  A
+source-level guard turns an informal habit into an executable rule
+(the same move D18's basename guard and D21's stub-assertion rule
+make for their conventions).  Documenting the type-correct
+precondition for direct test construction removes a real ambiguity:
+without it, a reader cannot tell whether ``validate()`` is expected
+to defend against wrong-typed fields, and the answer (structural
+checks may, by rule 23, but ``validate()`` does not replay
+``_type_check_specs``) needs to be stated once, authoritatively.
+
+Source-level enforcement was chosen over runtime enforcement
+because the goal is to keep the production *call sites* honest, not
+to change what happens at runtime.  Hiding or wrapping the dataclass
+constructor would change runtime behaviour, complicate the
+test-only escape hatch, and fight the frozen-dataclass model the
+project relies on.
+
+#### Alternatives Considered
+
+* *Add a ``create_invalid()`` constructor for tests.*  Rejected: it
+  would bless a second construction path, invite production misuse,
+  and duplicate what direct construction already does cleanly in
+  tests.
+* *Detect tests at runtime (stack inspection, a pytest check, a
+  secret token, or a metaclass gate on the constructor).*  Rejected:
+  all of these add runtime machinery and fragility to enforce a
+  convention that is really about source call sites.  The construction
+  boundary is a source property; check it in source.
+* *Build a general validation/static-analysis framework or a linter
+  plugin.*  Rejected as disproportionate (constitution rule 22).  A
+  small ``ast`` walk covering the project's flat
+  one-level-from-``_Validated`` inheritance is sufficient and
+  reviewable.
+* *Make ``validate()`` replay ``_type_check_specs``.*  Rejected: it
+  would change runtime behaviour, conflate two distinct layers
+  (constructor type checking vs structural validation), and is
+  explicitly out of scope.
+
+#### Revisit When
+
+* A validated record needs to inherit from an intermediate validated
+  base class rather than directly from ``_Validated``.  The guard's
+  discovery is one level deep by base-name match; multi-level
+  validated hierarchies would need the discovery widened here.
+* A legitimate production construction pattern appears that the guard
+  cannot see (for example, deliberate use of
+  ``dataclasses.replace(...)`` on a validated record in production).
+  At that point the convention and the guard's scope are refined
+  here rather than the guard quietly suppressed.
+* Direct-construction misuse is found often enough in review that
+  runtime enforcement earns its cost — at which point the trade-off
+  recorded above is revisited explicitly.

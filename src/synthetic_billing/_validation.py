@@ -50,6 +50,25 @@ class _Validated:
     attribute and may override ``_structural_checks`` to add value-range or
     shape rules.
 
+    Construction boundary (D41). Production code builds ``_Validated``
+    records through :meth:`create_validated` or an established model
+    builder; direct dataclass construction is not a supported production
+    path. Direct construction is reserved for tests that need a
+    deliberately invalid instance. A project-level guard
+    (``test_validated_construction_guard``) enforces this on non-test
+    source.
+
+    Validation layering. :meth:`create_validated` runs constructor type
+    checks (``_type_check_specs``) and then calls :meth:`validate`.
+    :meth:`validate` checks structural and value invariants of an
+    already type-correct instance; it does not replay the constructor
+    type checks. A directly constructed test instance is therefore
+    expected to be type-correct at the field level (the invalidity it
+    demonstrates lives in structural or value rules, not in argument
+    types), except where a subclass's ``_structural_checks`` adds its
+    own defensive ``isinstance`` re-checks for safely-observable
+    reporting under constitution rule 23.
+
     Domain rules do not belong here. External modules may produce additional
     checks and pass them to :func:`raise_on_violations` directly.
     """
@@ -58,7 +77,13 @@ class _Validated:
 
     @classmethod
     def create_validated(cls, *args: Any) -> Self:
-        """Build the dataclass, run constructor type checks, then validate."""
+        """Build the dataclass, run constructor type checks, then validate.
+
+        This is the supported production construction path (D41): it
+        confirms the argument count, runs the constructor type checks
+        from ``_type_check_specs``, constructs the instance, and then
+        runs :meth:`validate` for structural and value invariants.
+        """
         expected_count = len(cls._type_check_specs)
         actual_count = len(args)
         if actual_count != expected_count:
@@ -101,7 +126,15 @@ class _Validated:
         return tuple(checks)
 
     def validate(self) -> None:
-        """Apply structural checks declared by the subclass."""
+        """Apply structural checks declared by the subclass.
+
+        Checks structural and value invariants of an already
+        type-correct instance; it does not replay the constructor type
+        checks from ``_type_check_specs`` (D41). Subclasses whose
+        ``_structural_checks`` include defensive ``isinstance``
+        re-checks do so to keep violations safely observable under
+        constitution rule 23, not to re-run constructor type checking.
+        """
         raise_on_violations(
             self._structural_checks(),
             f"Invalid data in a `{type(self).__name__}` instance",

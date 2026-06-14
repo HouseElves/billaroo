@@ -12,19 +12,7 @@ level.
 import pathlib
 from collections import Counter
 
-_IGNORE_DIRS = frozenset({
-    ".git",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".venv",
-    "venv",
-    "build",
-    "dist",
-    "target",
-    "logs",
-})
+from synthetic_billing.test.repo_scan import find_project_root, is_ignored
 
 
 def _is_wrapped_dunder_python_file(path: pathlib.Path) -> bool:
@@ -43,30 +31,10 @@ def _is_wrapped_dunder_python_file(path: pathlib.Path) -> bool:
     )
 
 
-def _is_ignored(path: pathlib.Path) -> bool:
-    """Return True if *path* falls under an ignored directory."""
-    for part in path.parts:
-        if part in _IGNORE_DIRS:
-            return True
-        if part.endswith(".egg-info"):
-            return True
-    return False
-
-
-def _find_project_root() -> pathlib.Path:
-    """Walk up from this file until we find pyproject.toml."""
-    current = pathlib.Path(__file__).resolve().parent
-    while current != current.parent:
-        if (current / "pyproject.toml").exists():
-            return current
-        current = current.parent
-    raise RuntimeError("Could not locate project root (no pyproject.toml found)")
-
-
 def test_unique_file_basenames() -> None:
     """All file basenames in the project must be unique, with a general
     exception for wrapped-dunder Python files."""
-    root = _find_project_root()
+    root = find_project_root()
 
     basenames: list[str] = []
     for p in root.rglob("*"):
@@ -74,7 +42,7 @@ def test_unique_file_basenames() -> None:
             continue
         if _is_wrapped_dunder_python_file(p):
             continue
-        if _is_ignored(p.relative_to(root)):
+        if is_ignored(p.relative_to(root)):
             continue
         basenames.append(p.name)
 
