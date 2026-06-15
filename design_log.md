@@ -2380,3 +2380,99 @@ calls no action or driver code.
 * More than one recurring line per subscription becomes possible, at
   which point the one-line-per-chargeable-subscription rule and the
   invoice-line identity are revisited.
+
+### D45. Account-Month Invoice Generation Is A One-Action Semantic Chain
+
+D44 made one-account-month recurring billing a pure model operation,
+``build_account_month_invoice``.  This decision exposes that operation
+through the existing semantic-action architecture: a
+``GenerateInvoiceIntent`` and a one-action chain that returns the
+resulting invoice and lines via the D43 ``ActionResult`` fields.  It
+adds no billing rules of its own — the action layer only translates the
+model result into the accepted result shape.  The monthly driver does
+not yet invoke this chain; full-run billing integration is the next
+context's work.
+
+#### The Intent
+
+``GenerateInvoiceIntent`` (in ``actions/billing_actions.py``) is a
+frozen ``_Validated`` record with two fields, in order:
+``simulation_month: int`` and ``account_id: str``.  It requires an
+integer month (``bool`` excluded) of at least ``1`` — month 1 is valid
+for billing (D42), unlike a cancellation intent, which requires month 2
+or later (D38) — and a non-blank ``account_id``.  The intent records an
+already-decided request and deliberately carries nothing else: not the
+billing-cycle day, catalog prices, invoice identity, invoice total,
+subscription ids, or precomputed lines.  All of those are resolved from
+state, catalog, and the billing model when the action is applied.
+Production construction follows D41.
+
+#### The One-Action Chain
+
+``build_generate_invoice_action_chain(intent, catalog)`` returns a tuple
+holding exactly one semantic action.  Unlike cancellation — which has a
+state-change action followed by a separate event-emit action (D39) —
+billing has no state mutation and no separate lifecycle-event step, so a
+single action is the honest shape.  The *catalog* is captured at chain
+construction and used by the action when applied; the intent is not
+inspected by the builder, matching the cancellation builder's
+contract (the action validates when applied).  The concrete action type
+is private; the public API is the chain.
+
+#### Delegation And The Result Translation
+
+Applying the action calls ``build_account_month_invoice(state, catalog,
+intent.account_id, intent.simulation_month)`` and translates the
+result:
+
+* ``(invoice, invoice_lines)`` becomes ``ActionResult(state, (),
+  (invoice,), invoice_lines)`` — the original state unchanged, no
+  lifecycle events, one invoice, and the model's ordered lines;
+* ``None`` becomes ``ActionResult(state, (), (), ())`` — empty billing.
+
+The action emits no lifecycle events, produces at most one invoice,
+preserves the model's line order, consumes no randomness, performs no
+I/O, and constructs the ``ActionResult`` through ``create_validated``
+(D41).  It performs no pricing or chargeability of its own: account
+lookup, the active-account rule, chargeability, catalog-family pricing,
+construction, total calculation, and line ordering all stay in
+``build_account_month_invoice`` (D44).  Exceptions raised by the
+billing model (missing account, unpriceable item) propagate unchanged —
+the action does not catch, wrap, retry, or convert them — and the
+generated chain runs through the existing ``apply_action_chain`` with no
+billing-specific branch added there.
+
+#### Alternatives Considered
+
+* *A multi-action billing chain (state-change + event), mirroring
+  cancellation.*  Rejected: billing changes no state and emits no
+  lifecycle event, so a second action would be empty ceremony.  One
+  action is the truthful shape; if a future billing step needs to
+  mutate state or emit an event, the chain grows then (rule 22).
+* *Recompute pricing or chargeability in the action.*  Rejected: that
+  would duplicate D44 rules across layers.  The action is a thin
+  translator over the model operation.
+* *Thread the catalog through ``apply`` instead of capturing it in the
+  chain.*  Rejected: ``SemanticAction.apply`` takes only ``state`` (D38)
+  and must stay uniform across cancellation and billing; the catalog is
+  a construction-time dependency of the billing action, so the chain
+  builder captures it, exactly as the action holds its intent.
+* *Catch ``None`` differently — for example, return ``None`` from the
+  action or raise.*  Rejected: D43 already gives empty billing tuples a
+  clear meaning, and an action must always return an ``ActionResult`` so
+  the chain executor can thread it uniformly.
+* *Introduce a billing dispatcher, action registry, or execution
+  context.*  Rejected as premature generalisation (rule 22): one
+  intent and one action need none of it.
+
+#### Revisit When
+
+* The monthly driver must select which accounts to bill in which months
+  and invoke this chain across the run (the next context's integration).
+* A billing transition gains a state mutation or a lifecycle event, at
+  which point the one-action chain grows additional ordered actions.
+* Billing needs a dependency beyond the catalog (for example a hidden-
+  truth ledger), at which point how that dependency reaches the action
+  is decided.
+* Multiple invoices per account-month become possible, at which point
+  the at-most-one-invoice result shape is revisited.
