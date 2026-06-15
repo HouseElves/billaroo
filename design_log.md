@@ -1957,3 +1957,166 @@ project relies on.
 * Direct-construction misuse is found often enough in review that
   runtime enforcement earns its cost — at which point the trade-off
   recorded above is revisited explicitly.
+
+### D42. Invoice And Invoice-Line Record Vocabulary
+
+The first recurring-billing feature round introduces the two smallest
+record shapes needed to represent one account's recurring bill for one
+simulation month: an ``Invoice`` header and an ``InvoiceLine``.  This
+decision establishes their shapes, structural invariants, deterministic
+identities, and supported construction path.  It deliberately stops at
+the record vocabulary; chargeability, total calculation, the billing
+semantic action, driver integration, and raw emission are later
+billing slices.
+
+#### The Two Record Shapes
+
+``Invoice`` (in ``contracts/invoice_contracts.py``) has fields, in
+order: ``invoice_id: str``, ``simulation_month: int``,
+``account_id: str``, ``billing_cycle_day: int``,
+``total_amount: Decimal``.
+
+``InvoiceLine`` has fields, in order: ``invoice_line_id: str``,
+``invoice_id: str``, ``subscriber_id: str``, ``subscription_id: str``,
+``item_type: str``, ``item_code: str``, ``line_amount: Decimal``.
+
+#### Declared Grain (rule 15)
+
+* One ``Invoice`` is one invoice header for one account in one
+  simulation month.
+* One ``InvoiceLine``, for the currently supported billing vocabulary,
+  is one recurring charge for one subscription on one invoice.
+
+The line record is named ``InvoiceLine`` rather than introducing a
+separate recurring-charge subtype.  Future taxes, fees, credits,
+adjustments, and usage lines are not predeclared.
+
+#### Structural Invariants
+
+``Invoice`` requires a non-blank ``invoice_id`` and ``account_id``; an
+integer ``simulation_month`` (``bool`` excluded) of at least ``1``; an
+integer ``billing_cycle_day`` (``bool`` excluded) in ``1..28``; and a
+``total_amount`` that is a finite ``Decimal``, quantized to cents, and
+non-negative.
+
+``InvoiceLine`` requires non-blank ``invoice_line_id``, ``invoice_id``,
+``subscriber_id``, ``subscription_id``, and ``item_code``; an
+``item_type`` drawn from the existing ``SUBSCRIPTION_ITEM_TYPES``
+vocabulary; and a ``line_amount`` that is a finite ``Decimal``,
+quantized to cents, and non-negative.
+
+##### Month 1 Is Valid For Invoices
+
+Unlike a ``LifecycleEvent`` (D38), which is restricted to month 2 or
+later because month 1 is the starter-population month, an ``Invoice``
+may cover month 1.  Billing can occur in the first simulation month, so
+the month lower bound is ``1``, not ``2``.  The lifecycle-event month
+rule was deliberately not copied.
+
+##### Non-Negative Amounts For The First Recurring-Billing Feature
+
+Both ``total_amount`` and ``line_amount`` must be non-negative.  The
+first recurring-billing feature charges for active entitlements; it
+emits no credits, refunds, or negative adjustments.  Negative line
+families are deferred until the behaviour that produces them exists
+(constitution rule 22).
+
+##### Decimal Values Quantized To Cents
+
+Monetary fields are ``Decimal`` values quantized to cents (rule 13).
+The contract layer checks the *shape* of an already-built amount —
+finite, cents-quantized (exponent no finer than ``-2``), non-negative.
+It does not convert raw input into money; conversion happens at the
+model-layer ``build_money`` boundary.  The cent precision is duplicated
+in ``invoice_contracts.py`` as a local literal rather than imported,
+because a pure contract module must not import the model layer; the
+value is a fixed property of the money representation, not shared
+mutable configuration.
+
+#### Deterministic Identities
+
+``build_invoice`` derives ``derive_id("invoice", account_id,
+simulation_month)``.  The ID identifies an account-month invoice;
+``billing_cycle_day`` and ``total_amount`` are not identity fields, so
+recomputing a month's invoice with a different total does not change
+its identity.
+
+``build_invoice_line`` derives ``derive_id("invoice_line", invoice_id,
+subscription_id)``.  The current grain permits at most one recurring
+charge for a subscription on an invoice, so repeating the same builder
+call with the same invoice and subscription yields the same line
+identity.  No ordinal, line type, item code, amount, or subscriber id
+is folded into the identity in anticipation of future line families.
+
+#### Model Builders Are The Supported D41 Construction Path
+
+``build_invoice`` and ``build_invoice_line`` (in
+``model/billing_model.py``) are the supported production construction
+path under D41.  Each routes monetary input through ``build_money``
+(rejecting ``float``, ``bool``, non-finite, and unsupported input),
+derives the deterministic identifier, and constructs the record through
+``create_validated(...)``.  Neither performs I/O nor consumes
+randomness.  The D41 project guard discovers ``Invoice`` and
+``InvoiceLine`` automatically by parsing the source tree; no manual
+class list is maintained, and the guard finds zero direct-construction
+violations in production source.
+
+#### Excluded Fields
+
+The records deliberately omit invoice status, currency, dates, due
+dates, posting periods, line type, line descriptions, quantities, tax
+fields, usage fields, adjustment fields, payment fields, arbitrary
+payloads, metadata dictionaries, schema registries, and version
+abstractions.  Each would be speculative vocabulary without behaviour
+to populate it (constitution rule 22).
+
+#### Deferred Cross-Record And Chargeability Concerns
+
+These records do not prove that the referenced account, subscriber, or
+subscription exists; that a subscription belongs to its subscriber;
+that line item fields agree with the subscription; that a line shares
+its invoice's account or month; or that an invoice total equals the sum
+of its lines.  They also do not decide which subscriptions are
+chargeable.  Those are collection and semantic invariants (rule 8)
+owned by later billing slices.
+
+Billaroo still does not generate invoices after this slice: only the
+record vocabulary and per-record builders exist.  No semantic action,
+driver step, or emitter produces invoices yet.
+
+#### Alternatives Considered
+
+* *Fold ``billing_cycle_day`` or ``total_amount`` into the invoice
+  identity.*  Rejected: the account-month is the natural grain, and a
+  recomputed total for the same account-month is the same invoice, not
+  a new one.
+* *Add a line ordinal or line-type to the line identity now.*
+  Rejected: the current grain is one recurring charge per subscription
+  per invoice, which the (invoice, subscription) pair already
+  identifies; an ordinal would anticipate line families that do not
+  exist.
+* *Introduce a recurring-charge subtype distinct from a general
+  invoice line.*  Rejected as premature subtyping; one ``InvoiceLine``
+  shape suffices for the only line family that exists.
+* *Add a structural money validator or reuse ``build_money`` inside the
+  contract.*  Rejected: the contract must stay model-free, and the
+  shape check it needs (finite, cents-quantized, non-negative) is a
+  small local predicate, not a general validator.
+* *Validate account/subscriber/subscription existence in the record.*
+  Rejected: that is semantic validation (rule 8) and belongs to the
+  billing behaviour that has the surrounding state.
+
+#### Revisit When
+
+* A billing behaviour needs credits, refunds, or negative adjustments,
+  at which point the non-negative invariant and possibly a line-type or
+  sign field are revisited here.
+* Taxes, fees, usage, or proration enter scope and require additional
+  line families or fields.
+* An invoice must carry currency, dates, status, or a posting period
+  for downstream loading or dbt reconstruction.
+* More than one recurring charge per subscription per invoice becomes
+  possible, at which point the invoice-line identity gains a
+  distinguishing field.
+* Invoice-to-line reconciliation (total equals sum of lines) is
+  implemented as a collection or semantic invariant.
