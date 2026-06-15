@@ -2120,3 +2120,126 @@ driver step, or emitter produces invoices yet.
   distinguishing field.
 * Invoice-to-line reconciliation (total equals sum of lines) is
   implemented as a collection or semantic invariant.
+
+### D43. Action Results Carry Explicit Invoice And Invoice-Line Records
+
+``ActionResult`` (D38) carried only ``state`` and ``lifecycle_events``.
+D38 deferred invoice fields until concrete billing pressure appeared.
+D42 supplied that pressure by adding the ``Invoice`` and
+``InvoiceLine`` records and their builders.  This decision widens the
+action-result and ordered-chain contracts so semantic actions may
+return those records, and updates the existing cancellation path to the
+widened shape.  It does not generate billing records; no action,
+driver step, or emitter produces an invoice yet.
+
+#### The Widened Result Shape
+
+``ActionResult`` now has four fields, in this order::
+
+    state: SimulationState
+    lifecycle_events: tuple[LifecycleEvent, ...]
+    invoices: tuple[Invoice, ...]
+    invoice_lines: tuple[InvoiceLine, ...]
+
+The two new tuples are explicit, typed collections — not a generic
+emitted-record bag, a record dictionary, an output registry, or a
+visitor/dispatcher hook.  Explicit invoice and invoice-line tuples are
+the currently justified widening; anything more general would
+predeclare capability no concrete action requires (constitution rule
+22).
+
+#### Structural Invariants
+
+``ActionResult`` requires ``state`` to be a ``SimulationState`` and
+each of ``lifecycle_events``, ``invoices``, and ``invoice_lines`` to be
+a tuple containing only instances of its respective element type.
+Validation collects all safely observable independent violations
+(constitution rule 23): each output collection is checked
+independently, so a wrong top-level type on one collection skips only
+that collection's per-element checks while the other, well-typed
+collections still surface their own per-element violations.  The
+top-level field types are re-checked in ``_structural_checks`` so a
+directly constructed (test-only) instance still reports its violations
+even though it bypasses the constructor type checks (D41).
+
+This boundary adds no cross-record billing reconciliation.  In
+particular, ``ActionResult`` does not prove that every invoice line
+references an invoice in the same result, that invoice totals equal
+line totals, that identities are unique within a result, that records
+agree with the state, or that records share an account or month.  Those
+require concrete billing behaviour or a broader result boundary and are
+deferred.
+
+#### Ordered Accumulation In The Chain
+
+``apply_action_chain`` accumulates lifecycle events, invoices, and
+invoice lines independently.  For each collection it preserves action
+order and the order produced within each action; it does not
+deduplicate, sort, reconcile, or reinterpret records, and records from
+one output family never leak into another's collection.  State
+threading and exception behaviour are unchanged from D39: each action
+is invoked exactly once in tuple order, each receives the state
+returned by its predecessor, exceptions propagate unchanged, and no
+retry, wrapping, rollback, or further invocation occurs after a
+failure.  An empty chain returns the original state object with three
+empty output tuples.
+
+#### Cancellation Returns Empty Billing Output
+
+Both cancellation actions (D39) now return the widened result with
+empty invoice and invoice-line tuples.  Cancellation is otherwise
+unchanged: the chain still has exactly two actions, the state-change
+action still emits no lifecycle events, the event action still emits
+exactly one ``subscriber_cancelled`` event, and state mutation, event
+identity, action order, and exception behaviour remain as accepted in
+D39 and D40.  The cancellation intent, event schema, state transition,
+driver, probability selection, and raw emission are untouched.
+
+#### ``SemanticAction`` Is Unchanged
+
+The protocol method remains ``apply(state) -> ActionResult``.  Widening
+the result record does not require a protocol method or parameter
+change, and no billing-specific method is added to ``SemanticAction``.
+
+#### Rationale
+
+D38 deliberately kept ``ActionResult`` minimal and named invoices as a
+deferred field pending real pressure.  D42 created the records; a
+billing action (a later slice) will need to return them.  Widening the
+result now — ahead of the action that populates it — keeps the result
+contract and the chain accumulator stable before billing behaviour
+lands, so the billing action slice changes only billing logic, not the
+shared envelope.  Explicit tuples mirror the existing
+``lifecycle_events`` treatment exactly, which keeps the accumulator and
+the rule-23 validation uniform across all three output families.
+
+#### Alternatives Considered
+
+* *Defer widening until the billing action exists.*  Rejected: the
+  billing-action slice would then have to change the result record, the
+  chain accumulator, the cancellation actions, and the billing logic at
+  once.  Splitting the envelope change out keeps each slice's diff
+  focused and its boundary reviewable.
+* *Introduce a generic emitted-record collection or registry.*
+  Rejected as premature generalisation (rule 22): only two billing
+  record families exist, and explicit tuples are clearer, typed, and
+  sufficient.
+* *Add billing-specific methods to ``SemanticAction``.*  Rejected: the
+  protocol's single ``apply`` method is its whole contract; the widened
+  result already carries the new output.
+* *Reconcile invoices against lines (or against state) in
+  ``ActionResult``.*  Rejected for this slice: reconciliation needs the
+  billing behaviour that produces the records and is a semantic concern
+  (constitution rule 8), deferred to a later billing slice.
+
+#### Revisit When
+
+* A billing semantic action is introduced and must return invoices and
+  invoice lines through this result (the next billing slices).
+* Cross-record reconciliation (line-to-invoice references, totals,
+  identity uniqueness, state agreement) earns a home — either as
+  semantic validation in the producing action or as a broader result
+  boundary.
+* A third emitted-record family (for example payment activity or hidden
+  truth) appears, at which point whether to keep adding explicit tuples
+  or to promote a shared abstraction is reconsidered under rule 22.

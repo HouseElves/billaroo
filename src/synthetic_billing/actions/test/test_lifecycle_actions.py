@@ -233,6 +233,15 @@ class TestStateChangeAction:
         assert isinstance(result, ActionResult)
         assert not result.lifecycle_events
 
+    def test_returns_empty_billing_collections(self) -> None:
+        """Action 1 emits no invoices or invoice lines (D43)."""
+        state = _basic_state()
+        intent = CancelSubscriberIntent.create_validated(3, "sub-001")
+        chain = build_cancel_subscriber_action_chain(intent)
+        result = chain[0].apply(state)
+        assert not result.invoices
+        assert not result.invoice_lines
+
     def test_subscriber_becomes_inactive(self) -> None:
         """The named subscriber is inactive after the state-change action."""
         state = _basic_state()
@@ -460,6 +469,15 @@ class TestEventEmitAction:
         emit_result = chain[1].apply(post_state)
         assert emit_result.state is post_state
 
+    def test_returns_empty_billing_collections(self) -> None:
+        """Action 2 emits no invoices or invoice lines (D43)."""
+        intent = CancelSubscriberIntent.create_validated(3, "sub-001")
+        chain = build_cancel_subscriber_action_chain(intent)
+        post_state = chain[0].apply(_basic_state()).state
+        emit_result = chain[1].apply(post_state)
+        assert not emit_result.invoices
+        assert not emit_result.invoice_lines
+
     def test_event_action_on_pre_state_fails_loud(self) -> None:
         """Running the event action against the pre-state fails loudly."""
         intent = CancelSubscriberIntent.create_validated(3, "sub-001")
@@ -502,3 +520,11 @@ class TestCancellationEndToEnd:
         first = apply_action_chain(_basic_state(), chain_one)
         second = apply_action_chain(_basic_state(), chain_two)
         assert first.lifecycle_events == second.lifecycle_events
+
+    def test_full_chain_emits_no_billing(self) -> None:
+        """The full cancellation chain accumulates no invoices or lines (D43)."""
+        intent = CancelSubscriberIntent.create_validated(3, "sub-001")
+        chain = build_cancel_subscriber_action_chain(intent)
+        result = apply_action_chain(_basic_state(), chain)
+        assert not result.invoices
+        assert not result.invoice_lines

@@ -25,7 +25,7 @@ Implemented today:
 - `simulate/behavior_model.py` — deterministic cancellation selection: one draw per active subscriber per month, in stable subscriber order, against the month-start state
 - `simulate/month_driver.py` — monthly advancement through months 2..N, with month-start intent selection and ordered chain application
 - `simulate/simulation_result.py` — frozen, validated record carrying the final `SimulationState` and the ordered `subscriber_cancelled` event log
-- `actions/lifecycle_actions.py` + `actions/action_chain.py` + `actions/action_protocols.py` — `CancelSubscriberIntent`, the two-action cancellation chain, and the ordered chain applicator
+- `actions/lifecycle_actions.py` + `actions/action_chain.py` + `actions/action_protocols.py` — `CancelSubscriberIntent`, the two-action cancellation chain, and the ordered chain applicator; the `ActionResult` envelope carries lifecycle events plus (empty, for cancellation) invoice and invoice-line tuples, which the chain accumulates in order
 - `emit/raw_file_emitter.py` + `emit/manifest_emitter.py` — raw CSV emission for final-state accounts, subscribers, subscriptions, ordered lifecycle events, plus a JSON manifest with declared grain per emitted file (rule 15)
 - `synthetic_billing_cli.py` — a thin demo CLI wiring scenario load → catalog → population → monthly simulation → raw emission
 - `test/test_file_basename_uniqueness.py` — project-wide guard for rule 18
@@ -35,7 +35,7 @@ Implemented today:
 Not yet implemented (and not faked or stubbed elsewhere in the tree):
 
 - monthly lifecycle transitions other than cancellation: upgrades, downgrades, reactivations, feature changes
-- billing behaviour beyond the invoice record vocabulary: deriving which subscriptions are chargeable, calculating an account's bill from its subscriptions, the billing semantic action, monthly billing integration, run-level invoice accumulation, and raw invoice/invoice-line file emission
+- billing behaviour beyond the invoice record vocabulary and result envelope: deriving which subscriptions are chargeable, calculating an account's bill from its subscriptions, the billing semantic action, monthly billing integration, run-level invoice accumulation, and raw invoice/invoice-line file emission (action results can now *carry* invoice and invoice-line records, but no action *produces* any)
 - payments, usage events, adjustments
 - a hidden-truth ledger
 - the PostgreSQL loader
@@ -139,7 +139,7 @@ The design log also establishes precedent. Earlier decisions inform future decis
 
 Generated code must satisfy the project constitution. Review is separated into at least two concerns: whether the code is functionally correct, and whether it preserves the intended architecture. Constitutional adherence is neither an ad hoc process nor an informal preference. It is a documented and binding review target. When implementation pressure reveals an incomplete decision, the original decision is preserved and a refining decision is added. When generated code violates the constitution, the human architect either rejects the generation or records an explicit design-log amendment that changes the governing rule. The constitution does not bend silently. The history of the design is itself a versioned project artifact.
 
-This methodology has been applied to working systems with non-trivial architectural structure. Public demonstrations include the NYC Cab Experiment Platform, a medallion-style experiment pipeline built on open data engineering technologies under a 61-decision design log with strict data quality gates. The Billaroo synthetic data generator project refines the governance pattern developed during the NYC Cab Experiment and incorporates its practical lessons into a more formalized, repeatable process. Billaroo began with a governing 23-rule design constitution and has grown a 42-decision design log through its early stages.
+This methodology has been applied to working systems with non-trivial architectural structure. Public demonstrations include the NYC Cab Experiment Platform, a medallion-style experiment pipeline built on open data engineering technologies under a 61-decision design log with strict data quality gates. The Billaroo synthetic data generator project refines the governance pattern developed during the NYC Cab Experiment and incorporates its practical lessons into a more formalized, repeatable process. Billaroo began with a governing 23-rule design constitution and has grown a 43-decision design log through its early stages.
 
 Billaroo has two goals. The first is to deliver a tunable synthetic subscriber billing data generator. The second is to demonstrate a reliable AI-first methodology that controls AI-generated scope creep. The resulting methods are intended to be portable across project types. The specific technologies may change, but the core pattern remains stable: durable design constraints, explicit decision history, separated model responsibilities, adversarial review, executable validation, and human ownership of architecture and acceptance.
 

@@ -1,8 +1,9 @@
 """Tests for synthetic_billing.actions.action_chain.
 
-Slice 2 replaces the Slice 1 stub-assertion tests with tests that
-exercise the real chain executor (D39): ordering, state threading,
-event accumulation, empty-chain behaviour, and exception propagation.
+These tests exercise the real chain executor (D39, D43): ordering,
+state threading, independent accumulation of lifecycle events,
+invoices, and invoice lines, empty-chain behaviour, and exception
+propagation.
 
 The tests use small purpose-built actions rather than the cancellation
 chain so that chain semantics are tested in isolation.
@@ -17,6 +18,12 @@ from synthetic_billing.actions.action_protocols import ActionResult
 from synthetic_billing.contracts.event_contracts import (
     LifecycleEvent,
     SUBSCRIBER_CANCELLED_EVENT_TYPE,
+)
+from synthetic_billing.contracts.invoice_contracts import Invoice, InvoiceLine
+from synthetic_billing.contracts.subscription_contracts import PLAN_ITEM_TYPE
+from synthetic_billing.model.billing_model import (
+    build_invoice,
+    build_invoice_line,
 )
 from synthetic_billing.simulate.simulation_state import SimulationState
 
@@ -52,26 +59,54 @@ def _event(label: str) -> LifecycleEvent:
     )
 
 
+def _invoice(label: str) -> Invoice:
+    """Build a labelled invoice for ordering checks.
+
+    The label is encoded into the account_id so the invoice tuples
+    visibly preserve order during accumulation.
+    """
+    return build_invoice(f"acct-{label}", 1, 15, "19.99")
+
+
+def _line(label: str) -> InvoiceLine:
+    """Build a labelled invoice line for ordering checks.
+
+    The label is encoded into the subscription_id so the line tuples
+    visibly preserve order during accumulation.
+    """
+    return build_invoice_line(
+        "inv-001", "subscriber-001", f"subscription-{label}",
+        PLAN_ITEM_TYPE, "BASIC", "9.99",
+    )
+
+
 # Test-only actions are by design one-method shells: the SemanticAction
 # protocol is single-method, so multi-method test doubles would be
 # misleading.
-class _RecordingAction:  # pylint: disable=too-few-public-methods
+class _RecordingAction:  # pylint: disable=too-few-public-methods,too-many-arguments,too-many-positional-arguments
     """Test action that records inputs and returns a configured result."""
 
     def __init__(
         self,
         result_state: SimulationState,
         result_events: tuple[LifecycleEvent, ...] = (),
+        result_invoices: tuple[Invoice, ...] = (),
+        result_lines: tuple[InvoiceLine, ...] = (),
     ) -> None:
         self.result_state = result_state
         self.result_events = result_events
+        self.result_invoices = result_invoices
+        self.result_lines = result_lines
         self.received_states: list[SimulationState] = []
 
     def apply(self, state: SimulationState) -> ActionResult:
         """Record the incoming state and return the configured result."""
         self.received_states.append(state)
         return ActionResult.create_validated(
-            self.result_state, self.result_events,
+            self.result_state,
+            self.result_events,
+            self.result_invoices,
+            self.result_lines,
         )
 
 
@@ -90,12 +125,12 @@ class _RaisingAction:  # pylint: disable=too-few-public-methods
 
 
 # ---------------------------------------------------------------------------
-# Empty-chain behaviour (D39)
+# Empty-chain behaviour (D39, D43)
 # ---------------------------------------------------------------------------
 
 
 class TestApplyActionChainEmptyChain:
-    """An empty chain returns the original state and no events (D39)."""
+    """An empty chain returns the original state and empty outputs (D43)."""
 
     def test_returns_action_result(self) -> None:
         """An empty chain returns an ActionResult."""
@@ -109,16 +144,17 @@ class TestApplyActionChainEmptyChain:
         result = apply_action_chain(state, ())
         assert result.state is state
 
-    def test_no_events(self) -> None:
-        """An empty chain accumulates no events."""
+    def test_three_empty_output_tuples(self) -> None:
+        """An empty chain accumulates no events, invoices, or lines."""
         state = _empty_state()
         result = apply_action_chain(state, ())
-        assert isinstance(result.lifecycle_events, tuple)
         assert not result.lifecycle_events
+        assert not result.invoices
+        assert not result.invoice_lines
 
 
 # ---------------------------------------------------------------------------
-# Single-action behaviour (D39)
+# Single-action behaviour (D39, D43)
 # ---------------------------------------------------------------------------
 
 
@@ -155,14 +191,30 @@ class TestApplyActionChainSingleAction:
         result = apply_action_chain(state, (action,))
         assert result.lifecycle_events == (event,)
 
+    def test_invoices_are_accumulated(self) -> None:
+        """The chain returns the action's invoices."""
+        state = _empty_state()
+        invoice = _invoice("only")
+        action = _RecordingAction(state, (), (invoice,))
+        result = apply_action_chain(state, (action,))
+        assert result.invoices == (invoice,)
+
+    def test_invoice_lines_are_accumulated(self) -> None:
+        """The chain returns the action's invoice lines."""
+        state = _empty_state()
+        line = _line("only")
+        action = _RecordingAction(state, (), (), (line,))
+        result = apply_action_chain(state, (action,))
+        assert result.invoice_lines == (line,)
+
 
 # ---------------------------------------------------------------------------
-# Multi-action behaviour: ordering, threading, accumulation (D39)
+# Multi-action behaviour: ordering, threading, accumulation (D39, D43)
 # ---------------------------------------------------------------------------
 
 
 class TestApplyActionChainMultipleActions:
-    """A multi-action chain threads state and accumulates events in order (D39)."""
+    """A multi-action chain threads state and accumulates outputs in order."""
 
     def test_each_action_called_once(self) -> None:
         """Every action is invoked exactly once."""
@@ -208,6 +260,47 @@ class TestApplyActionChainMultipleActions:
         result = apply_action_chain(state, (a, b, c))
         ids = [e.subscriber_id for e in result.lifecycle_events]
         assert ids == ["subscriber-a1", "subscriber-a2", "subscriber-c1"]
+
+    def test_invoices_accumulated_in_tuple_order(self) -> None:
+        """Invoices are accumulated in action order, then per-action order."""
+        state = _empty_state()
+        a = _RecordingAction(state, (), (_invoice("a1"), _invoice("a2")))
+        b = _RecordingAction(state, (), ())
+        c = _RecordingAction(state, (), (_invoice("c1"),))
+        result = apply_action_chain(state, (a, b, c))
+        ids = [inv.account_id for inv in result.invoices]
+        assert ids == ["acct-a1", "acct-a2", "acct-c1"]
+
+    def test_invoice_lines_accumulated_in_tuple_order(self) -> None:
+        """Invoice lines accumulate in action order, then per-action order."""
+        state = _empty_state()
+        a = _RecordingAction(state, (), (), (_line("a1"), _line("a2")))
+        b = _RecordingAction(state, (), (), ())
+        c = _RecordingAction(state, (), (), (_line("c1"),))
+        result = apply_action_chain(state, (a, b, c))
+        ids = [ln.subscription_id for ln in result.invoice_lines]
+        assert ids == [
+            "subscription-a1", "subscription-a2", "subscription-c1",
+        ]
+
+    def test_output_families_stay_in_their_own_collections(self) -> None:
+        """Events, invoices, and lines never leak into each other's tuples."""
+        state = _empty_state()
+        a = _RecordingAction(
+            state, (_event("a"),), (_invoice("a"),), (_line("a"),),
+        )
+        b = _RecordingAction(
+            state, (_event("b"),), (_invoice("b"),), (_line("b"),),
+        )
+        result = apply_action_chain(state, (a, b))
+        assert all(
+            isinstance(e, LifecycleEvent) for e in result.lifecycle_events
+        )
+        assert all(isinstance(i, Invoice) for i in result.invoices)
+        assert all(isinstance(ln, InvoiceLine) for ln in result.invoice_lines)
+        assert len(result.lifecycle_events) == 2
+        assert len(result.invoices) == 2
+        assert len(result.invoice_lines) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +355,9 @@ class TestApplyActionChainResultEnvelope:
     def test_returns_validated_action_result(self) -> None:
         """A non-empty chain returns a validated ActionResult."""
         state = _empty_state()
-        action = _RecordingAction(state, (_event("only"),))
+        action = _RecordingAction(
+            state, (_event("only"),), (_invoice("only"),), (_line("only"),),
+        )
         result = apply_action_chain(state, (action,))
         assert result.validate() is None
 

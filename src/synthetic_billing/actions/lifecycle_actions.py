@@ -266,9 +266,13 @@ class _ApplyCancellationStateChangeAction:  # pylint: disable=too-few-public-met
     intent: CancelSubscriberIntent
 
     def apply(self, state: SimulationState) -> ActionResult:
-        """Return an ActionResult with the post-cancellation state and no events."""
+        """Return an ActionResult with the post-cancellation state and no events.
+
+        Cancellation produces no billing records, so the invoice and
+        invoice-line tuples are empty (D43).
+        """
         new_state = _apply_cancellation_to_state(state, self.intent)
-        return ActionResult.create_validated(new_state, ())
+        return ActionResult.create_validated(new_state, (), (), ())
 
 
 @dataclasses.dataclass(frozen=True)
@@ -282,9 +286,13 @@ class _EmitCancellationEventAction:  # pylint: disable=too-few-public-methods
     intent: CancelSubscriberIntent
 
     def apply(self, state: SimulationState) -> ActionResult:
-        """Return an ActionResult with the same state and exactly one event."""
+        """Return an ActionResult with the same state and exactly one event.
+
+        Cancellation produces no billing records, so the invoice and
+        invoice-line tuples are empty (D43).
+        """
         event = build_subscriber_cancelled_event(state, self.intent)
-        return ActionResult.create_validated(state, (event,))
+        return ActionResult.create_validated(state, (event,), (), ())
 
 
 # ---------------------------------------------------------------------------
