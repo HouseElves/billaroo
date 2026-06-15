@@ -2243,3 +2243,140 @@ the rule-23 validation uniform across all three output families.
 * A third emitted-record family (for example payment activity or hidden
   truth) appears, at which point whether to keep adding explicit tuples
   or to promote a shared abstraction is reconsidered under rule 22.
+
+### D44. One-Account-Month Recurring Billing Is A Pure Model Operation
+
+D42 added the ``Invoice`` and ``InvoiceLine`` records and their
+builders; D43 widened ``ActionResult`` to carry them.  This decision
+adds the first behaviour that *produces* billing records:
+``build_account_month_invoice`` in ``model/billing_model.py``.  It is a
+pure model function — no semantic action, no driver integration, no
+mutation, no randomness, no I/O.  Exposing this behaviour through a
+billing semantic action is the next slice and is deliberately not done
+here.
+
+#### The Boundary And Return Shape
+
+The function signature is::
+
+    build_account_month_invoice(
+        state: SimulationState,
+        catalog: Catalog,
+        account_id: str,
+        simulation_month: int,
+    ) -> tuple[Invoice, tuple[InvoiceLine, ...]] | None
+
+It returns ``(invoice, invoice_lines)`` with a non-empty line tuple
+when at least one subscription is chargeable, and ``None`` when the
+account exists but has nothing chargeable.  One account-month produces
+at most one invoice, so the return is a plain pair (or ``None``); no
+billing-result dataclass is introduced to wrap it.  The operation
+bills exactly one account for exactly one month — billing across
+accounts or across the simulation horizon belongs to later slices.
+
+#### Chargeability Is Half-Open Effective Dating
+
+A subscription is chargeable in month ``m`` exactly when
+``start_month <= m`` and (``end_month is None`` or ``m < end_month``),
+applying the existing ``[start_month, end_month)`` convention (D39).
+Thus a subscription is chargeable in its start month, an open
+subscription stays chargeable, a subscription is not chargeable in its
+end month, and a future or already-ended subscription is excluded.
+Chargeability reads the effective-dated subscription record directly:
+there is no proration, no service-day counting, no posting date, and
+no billing-cycle date arithmetic.
+
+#### Account Resolution And The Active Requirement
+
+The requested account must exist in ``state.accounts``; a missing
+account is an invalid request and fails loudly.  Only an account whose
+status is the active (good-standing) status is billable — a present
+non-active account produces no invoice and no lines.  The billable
+status is taken from the first entry of the account-status vocabulary
+(``ACCOUNT_STATUSES``) rather than a magic string, so the billing rule
+stays tied to the contract definition.  Subscriptions are billed
+through subscribers whose ``account_id`` matches the requested account.
+The account's existing ``billing_cycle_day`` supplies the invoice field
+of the same name.  This slice does not change account status or add
+account lifecycle behaviour.
+
+#### Catalog Pricing And Line Order
+
+Each chargeable subscription is priced from the catalog: a plan
+subscription from the matching ``PlanDefinition.monthly_price``, a
+feature subscription from the matching ``FeatureDefinition``.  The
+line carries the subscription's subscriber id, subscription id, item
+type, and item code, and the catalog's current monthly price as the
+line amount.  An item code that resolves under no catalog family, or
+only under the wrong family for the subscription's item type, is
+contradictory state/catalog input and fails loudly — it is never
+silently skipped or priced at zero.  Pricing is the current monthly
+rate only: no historical pricing, price increases, discounts, taxes,
+usage, fees, credits, adjustments, or proration.
+
+Lines are returned in the order their subscriptions appear in
+``state.subscriptions``; the operation does not sort by subscriber,
+item type, code, price, or identifier.
+
+#### Construction And Exact Reconciliation
+
+All records are built through the accepted Slice 1 builders
+(``build_invoice``, ``build_invoice_line``); production code never
+directly constructs ``Invoice`` or ``InvoiceLine`` (D41).  The invoice
+total is the exact ``Decimal`` sum of the returned line amounts, so
+``invoice.total_amount == sum(line.line_amount for line in lines)``,
+and every line carries the returned invoice's id.  Because each line
+amount is a cents-quantized ``Decimal`` from ``build_money``, their sum
+is itself cents-quantized and passes the ``Invoice`` total invariant
+without re-rounding.  Repeated calls with equivalent inputs return
+equal records in the same order, and the D42 deterministic identities
+are preserved.
+
+#### Validation And Purity
+
+The function fails loudly (via the existing ``InvalidRequestError``,
+not a new billing-specific hierarchy) when ``account_id`` is blank,
+when ``simulation_month`` is not an ``int`` / is ``bool`` / is below
+``1``, when the account is absent, or when a chargeable subscription
+cannot be priced.  It leaves ``state`` and ``catalog`` unchanged,
+performs no I/O, consumes no randomness, emits no lifecycle events, and
+calls no action or driver code.
+
+#### Alternatives Considered
+
+* *Introduce a ``BillingResult`` dataclass wrapping the invoice and
+  lines.*  Rejected: one account-month yields at most one invoice, and
+  a pair-or-``None`` return is sufficient and clearer than a wrapper
+  that would predeclare structure no caller needs yet (rule 22).
+* *Silently skip or zero-price an unresolved item code.*  Rejected: an
+  unpriceable chargeable subscription is contradictory input, and the
+  fail-loud convention surfaces it rather than producing a silently
+  wrong total.
+* *Reorder lines (e.g. plan first, then features, or sorted by code).*
+  Rejected: preserving ``state.subscriptions`` order keeps the
+  operation deterministic and free of an ordering policy that nothing
+  yet requires.
+* *Build a rating engine or pricing-strategy abstraction.*  Rejected as
+  premature generalisation (rule 22): a direct catalog lookup of the
+  current monthly price is all the single recurring-charge line family
+  needs.
+* *Bill non-active accounts (e.g. suspended) too.*  Rejected: only
+  good-standing accounts are billable in this slice; suspension and
+  closure billing semantics are not yet modelled.
+
+#### Revisit When
+
+* A billing semantic action and chain need to expose this behaviour
+  (the next billing slice).
+* Billing must run across all accounts and all months (driver
+  integration), at which point how per-account-month invoices
+  accumulate into a run is decided.
+* Proration, taxes, fees, usage, credits, adjustments, discounts, or
+  historical / effective-dated catalog pricing enter scope and change
+  line construction or pricing.
+* A non-active account must produce billing artifacts (for example a
+  suspension or final invoice), at which point the active-only rule is
+  revisited.
+* More than one recurring line per subscription becomes possible, at
+  which point the one-line-per-chargeable-subscription rule and the
+  invoice-line identity are revisited.
