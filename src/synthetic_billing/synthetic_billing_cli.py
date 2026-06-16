@@ -71,8 +71,9 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="synthetic-billing",
         description=(
             "Build the deterministic baseline starter population, run "
-            "monthly cancellation simulation, and emit raw operational "
-            "files."
+            "monthly cancellation simulation, generate recurring "
+            "account-month invoices, and emit raw operational files "
+            "(including invoices.csv and invoice_lines.csv)."
         ),
     )
     parser.add_argument(

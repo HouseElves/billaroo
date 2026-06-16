@@ -92,7 +92,7 @@ To run a specific test file:
 pytest src/synthetic_billing/simulate/test/test_month_driver.py -v
 ```
 
-To run the baseline generate-and-simulate demo, which reads `configs/baseline_scenario.yaml`, advances the starter population through months 2..12 with deterministic cancellations, and writes raw files under `build/raw`:
+To run the baseline generate-and-simulate demo, which reads `configs/baseline_scenario.yaml`, advances the starter population through months 2..12 with deterministic cancellations, bills every month against the post-transition state, and writes the raw files (including `invoices.csv` and `invoice_lines.csv`) under `build/raw`:
 
 ```bash
 python -m synthetic_billing.synthetic_billing_cli
