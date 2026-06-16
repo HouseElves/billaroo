@@ -34,7 +34,10 @@ A single seeded ``RandomStream`` is threaded through both starter-
 population construction and monthly simulation, so the same
 ``(scenario, seed, code version)`` always produces byte-identical
 artifacts; billing consumes no random draws.  The CLI's printed
-summary does not yet report or validate the billing files.
+summary reports the invoice and invoice-line files and their row
+counts, and the canonical smoke gate verifies the billing artifacts
+exist and are internally coherent (manifest agreement, line-to-invoice
+integrity, and exact invoice-total reconciliation).
 
 2. Load Raw Data Into PostgreSQL  (planned)
 -------------------------------------------

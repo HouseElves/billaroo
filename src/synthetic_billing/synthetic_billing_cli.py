@@ -10,8 +10,9 @@ This is a thin command-line wrapper (D35) over the end-to-end path:
                               # cancellation selection (D40), and bills
                               # every month against the post-transition
                               # state (D46) — billing consumes no draws
-    -> emit_raw_files         # serializes final state + ordered
-                              # lifecycle events
+    -> emit_raw_files         # serializes final state, ordered
+                              # lifecycle events, and ordered billing
+                              # records (D47)
 
 A single :class:`RandomStream` is constructed once and threaded
 through both stages so the stream position evolves deterministically
@@ -20,11 +21,12 @@ across the full run.
 The CLI orchestrates existing functions only.  It does not build the
 population or emit files itself, does not implement transitions
 other than cancellation, computes no analytics, and loads no database.
-The simulation run now generates recurring invoices and invoice lines
-in memory (D46), but this slice does not emit invoice files and the
-CLI's printed summary is unchanged: it reports the raw artifacts and
-lifecycle-event counts only.  It is a demo runner, not an application
-framework.
+Its printed summary reports the emitter's result — the raw artifacts
+and their written-row counts, including the invoice and invoice-line
+billing files (D47, D48) — but performs no reconciliation of its own:
+billing coherence is proven by the tested boundaries and the canonical
+smoke gate (D48), not by CLI business logic.  It is a demo runner, not
+an application framework.
 
 Default paths are intentionally boring and interpreted relative to the
 current working directory:
@@ -130,6 +132,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"Lifecycle events written: {emit_result.lifecycle_events_written}"
     )
     print(f"Lifecycle events file: {emit_result.lifecycle_events_path}")
+    print(f"Invoices written: {emit_result.invoices_written}")
+    print(f"Invoices file: {emit_result.invoices_path}")
+    print(f"Invoice lines written: {emit_result.invoice_lines_written}")
+    print(f"Invoice lines file: {emit_result.invoice_lines_path}")
     print(f"Manifest: {emit_result.manifest_path}")
     return 0
 

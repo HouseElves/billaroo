@@ -18,6 +18,8 @@ from synthetic_billing import synthetic_billing_cli as cli
 from synthetic_billing.emit.manifest_emitter import MANIFEST_FILENAME
 from synthetic_billing.emit.raw_file_emitter import (
     ACCOUNTS_FILENAME,
+    INVOICE_LINES_FILENAME,
+    INVOICES_FILENAME,
     LIFECYCLE_EVENTS_FILENAME,
     SUBSCRIBERS_FILENAME,
     SUBSCRIPTIONS_FILENAME,
@@ -69,10 +71,11 @@ def _manifest_counts(output_dir: Path) -> dict[str, int]:
 
 
 def _read_all_bytes(output_dir: Path) -> dict[str, bytes]:
-    """Return ``{filename: bytes}`` for all five emitted artifacts."""
+    """Return ``{filename: bytes}`` for all seven emitted artifacts."""
     names = (
         ACCOUNTS_FILENAME, SUBSCRIBERS_FILENAME,
         SUBSCRIPTIONS_FILENAME, LIFECYCLE_EVENTS_FILENAME,
+        INVOICES_FILENAME, INVOICE_LINES_FILENAME,
         MANIFEST_FILENAME,
     )
     return {name: (output_dir / name).read_bytes() for name in names}
@@ -113,12 +116,14 @@ class TestCliSuccess:
         assert cli.main(_baseline_args(tmp_path)) == 0
 
     def test_emits_all_files(self, tmp_path) -> None:
-        """All five raw artifacts are written to the output directory."""
+        """All seven raw artifacts are written to the output directory."""
         cli.main(_baseline_args(tmp_path))
         assert (tmp_path / ACCOUNTS_FILENAME).exists()
         assert (tmp_path / SUBSCRIBERS_FILENAME).exists()
         assert (tmp_path / SUBSCRIPTIONS_FILENAME).exists()
         assert (tmp_path / LIFECYCLE_EVENTS_FILENAME).exists()
+        assert (tmp_path / INVOICES_FILENAME).exists()
+        assert (tmp_path / INVOICE_LINES_FILENAME).exists()
         assert (tmp_path / MANIFEST_FILENAME).exists()
 
     def test_manifest_counts_match_independent_build(self, tmp_path) -> None:
@@ -296,3 +301,89 @@ class TestCliMonthlySimulationIntegration:
         cli.main(_baseline_args(tmp_path))
         out = capsys.readouterr().out
         assert str(tmp_path / LIFECYCLE_EVENTS_FILENAME) in out
+
+
+# ---- billing summary and emission (Slice 7) ----
+
+
+def _independent_billing_counts(config_path: Path) -> tuple[int, int]:
+    """Run the full pipeline independently and return (invoices, lines).
+
+    Mirrors the CLI's orchestration so the test does not pin to a
+    hard-coded baseline invoice or line count the production code is
+    forbidden from carrying (D40, D48).
+    """
+    config = load_scenario_config(config_path)
+    rng = RandomStream(config.seed)
+    catalog = build_default_catalog()
+    state = build_population(config, catalog, rng)
+    result = run_monthly_simulation(state, config, rng, catalog)
+    return len(result.invoices), len(result.invoice_lines)
+
+
+class TestCliBillingEmission:
+    """The CLI emits the billing files and lists them in the manifest."""
+
+    def test_billing_files_created(self, tmp_path) -> None:
+        """The baseline CLI run produces both billing CSV files."""
+        cli.main(_baseline_args(tmp_path))
+        assert (tmp_path / INVOICES_FILENAME).exists()
+        assert (tmp_path / INVOICE_LINES_FILENAME).exists()
+
+    def test_manifest_lists_billing_files(self, tmp_path) -> None:
+        """The manifest includes both billing files with record counts."""
+        cli.main(_baseline_args(tmp_path))
+        counts = _manifest_counts(tmp_path)
+        assert INVOICES_FILENAME in counts
+        assert INVOICE_LINES_FILENAME in counts
+
+    def test_manifest_billing_counts_match_independent_run(
+        self, tmp_path,
+    ) -> None:
+        """Manifest billing counts equal an independent pipeline run."""
+        cli.main(_baseline_args(tmp_path))
+        counts = _manifest_counts(tmp_path)
+        invoices, lines = _independent_billing_counts(_BASELINE_CONFIG)
+        assert counts[INVOICES_FILENAME] == invoices
+        assert counts[INVOICE_LINES_FILENAME] == lines
+
+    def test_baseline_produces_billing_output(self, tmp_path) -> None:
+        """The committed baseline emits at least one invoice and line."""
+        cli.main(_baseline_args(tmp_path))
+        counts = _manifest_counts(tmp_path)
+        assert counts[INVOICES_FILENAME] >= 1
+        assert counts[INVOICE_LINES_FILENAME] >= 1
+
+
+class TestCliBillingSummary:
+    """The printed summary reports the billing artifacts and counts."""
+
+    def test_summary_includes_invoice_count(self, tmp_path, capsys) -> None:
+        """Summary names the invoice row count emitted."""
+        cli.main(_baseline_args(tmp_path))
+        out = capsys.readouterr().out
+        invoices, _ = _independent_billing_counts(_BASELINE_CONFIG)
+        assert f"Invoices written: {invoices}" in out
+
+    def test_summary_includes_invoice_line_count(
+        self, tmp_path, capsys,
+    ) -> None:
+        """Summary names the invoice-line row count emitted."""
+        cli.main(_baseline_args(tmp_path))
+        out = capsys.readouterr().out
+        _, lines = _independent_billing_counts(_BASELINE_CONFIG)
+        assert f"Invoice lines written: {lines}" in out
+
+    def test_summary_includes_invoice_path(self, tmp_path, capsys) -> None:
+        """Summary names the emitted invoices file path."""
+        cli.main(_baseline_args(tmp_path))
+        out = capsys.readouterr().out
+        assert str(tmp_path / INVOICES_FILENAME) in out
+
+    def test_summary_includes_invoice_line_path(
+        self, tmp_path, capsys,
+    ) -> None:
+        """Summary names the emitted invoice-lines file path."""
+        cli.main(_baseline_args(tmp_path))
+        out = capsys.readouterr().out
+        assert str(tmp_path / INVOICE_LINES_FILENAME) in out

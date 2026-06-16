@@ -2831,3 +2831,122 @@ schemas, ordering, and behaviour exactly.
 * A second monetary or schema format consumer appears, at which point
   promoting a shared schema/serialization helper is reconsidered under
   rule 22.
+
+### D48. CLI Billing Summary And Canonical Smoke Reconciliation
+
+D47 emitted ``invoices.csv`` and ``invoice_lines.csv``, but the CLI
+summary still reported only the pre-billing artifacts and the canonical
+smoke gate validated only the lifecycle-event file.  This decision
+finishes the executable public path for billing: the CLI reports the
+billing artifacts, and the smoke gate proves they are present and
+internally coherent.  No billing semantics are added or moved.
+
+#### CLI Billing Summary
+
+The CLI prints four new lines from the existing
+:class:`RawEmissionResult` fields (D47): invoices written, the invoices
+file path, invoice lines written, and the invoice-lines file path,
+placed after the lifecycle-event lines and before the manifest line.
+The CLI remains a thin demo runner (D35): it reports the emitter's
+result and performs no reconciliation, pricing, or construction of its
+own.  The established summary lines and their wording are unchanged, the
+missing-config exit behaviour is unchanged, and no new CLI flags,
+business logic, or reporting framework are introduced.
+
+#### Canonical Smoke Reconciliation Belongs In The Gate
+
+The smoke step gains billing existence and coherence checks against its
+temporary output directory: ``invoices.csv`` and ``invoice_lines.csv``
+exist; the baseline produces at least one invoice and one line; the
+manifest counts for both files agree with their CSV data-row counts;
+every emitted invoice line references an emitted invoice; and each
+invoice total equals the exact ``Decimal`` sum of its own emitted lines.
+The existing lifecycle-event smoke evidence is retained unchanged.
+
+The material decision is *where* end-to-end billing reconciliation
+lives.  It lives in the gate's smoke step, reading the emitted CSV
+files, rather than in the CLI, the emitter, or the simulation.  The
+emitter must serialize records without recomputing billing (D47), the
+CLI must stay a thin runner (D35), and the model already reconciles an
+invoice against its lines at construction (D44).  The smoke step proves
+the *public artifacts on disk* are coherent end to end — a different
+guarantee from the in-memory model invariant, and the right place for an
+operational, file-level check.  Reconciliation uses ``Decimal`` parsed
+from the CSV text so the money comparison is exact (rule 13); the CSV
+already carries exact decimal text (D47).
+
+#### No Frozen Counts
+
+The smoke step never names the baseline invoice or line count.  Like the
+existing lifecycle-event check, it asserts relationships (manifest
+agreement, line-to-invoice integrity, total reconciliation) and a
+minimum expected capability (at least one invoice and one line), not an
+incidental frozen number.  Production code is still forbidden from
+hard-coding a baseline count, and the CLI tests derive expected counts
+from an independent pipeline run rather than pinning literals.  This
+keeps the gate robust to benign baseline changes while still proving the
+feature works.
+
+#### CI Parity Preserved
+
+The gate change is entirely inside ``scripts/checkin.sh``.  The GitHub
+Actions workflow still defers to that one script (D36), so the local and
+CI gates remain the same gate by construction; no smoke logic is
+duplicated into YAML.
+
+#### Evidence
+
+CLI tests assert the four new summary lines (counts derived from an
+independent run), that both billing files are emitted and listed in the
+manifest with matching counts, and that the baseline produces non-empty
+billing output.  The determinism tests now also cover the two billing
+files.  File-level reconciliation (line-to-invoice integrity and exact
+invoice-total sums) is owned by the smoke step rather than re-proved in
+the CLI tests, since the model and emitter tests already cover the
+record-level invariants (D44, D46, D47).
+
+#### Public Honesty
+
+The README and ``demo_workflow.rst`` now describe the CLI billing
+summary and the seven emitted artifacts, and state that the canonical
+smoke gate verifies billing-file presence, manifest agreement,
+line-to-invoice integrity, and invoice-total reconciliation.  They do
+not claim any broader billing capability: payments, taxes, usage, hidden
+truth, PostgreSQL, and dbt remain planned, not implemented.
+
+#### Alternatives Considered
+
+* *Reconcile in the CLI and print a pass/fail line.*  Rejected: the CLI
+  is a thin demo runner (D35); end-to-end validation is gate evidence,
+  not runtime business logic, and baking it into the CLI would couple a
+  demo runner to a verification responsibility.
+* *Add a reconciliation pass to the emitter.*  Rejected: the emitter
+  serializes accepted records and must not recompute billing (D47);
+  reconciling there would duplicate the model's invariant (D44) outside
+  the model and blur the raw-emission boundary.
+* *Freeze the baseline invoice/line counts in the smoke step.*
+  Rejected: incidental counts are not a governing contract; freezing
+  them would make benign scenario or model changes fail the gate for no
+  semantic reason, contrary to the existing lifecycle-count posture.
+* *Put the billing checks in a separate script invoked by CI.*
+  Rejected: that would split the gate and break the single-script CI
+  parity (D36).
+* *Fold the billing smoke block into the existing lifecycle Python
+  heredoc.*  Rejected: a separate, well-commented block keeps the
+  lifecycle evidence intact and the billing evidence independently
+  readable; the two concerns do not share state.
+
+#### Revisit When
+
+* Payments, taxes, fees, usage, credits, or adjustments add new emitted
+  files or new line types, at which point the smoke reconciliation is
+  extended to cover them and the invoice-total identity is revisited.
+* Hidden truth lands and the gate can compare reconstructed metrics to
+  simulator truth, at which point a stronger validation step is added
+  beyond file-level coherence.
+* The CLI grows beyond a demo runner (subcommands, structured output),
+  at which point the summary format and any reporting abstraction are
+  reconsidered under rule 22.
+* A baseline change makes the "at least one invoice" floor too weak to
+  be meaningful, at which point the minimum-capability assertion is
+  strengthened deliberately rather than frozen to a count.
