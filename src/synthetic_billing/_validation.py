@@ -42,6 +42,43 @@ def raise_on_violations(checks: Sequence[CheckTuple], message: str) -> None:
         raise InvalidRequestError(message, violations=violations)
 
 
+def collection_element_checks(
+    field_name: str,
+    value: Any,
+    element_type: type,
+) -> tuple[CheckTuple, ...]:
+    """Return rule-23-safe checks that *value* is a tuple of *element_type*.
+
+    Produces a top-level check that *value* is a ``tuple`` followed,
+    when it is, by one per-element ``isinstance`` check.  When *value*
+    is not a tuple the per-element checks are skipped: iterating a
+    non-tuple is not a safely observable check (constitution rule 23),
+    so this surfaces only the top-level violation for that field while
+    leaving any sibling collections to report independently.
+
+    This is shared vocabulary, not a domain rule: it expresses the
+    recurring "explicit, typed output collection" structural shape used
+    by result envelopes that carry several independent record tuples
+    (``ActionResult`` and ``SimulationResult``).  It was promoted into
+    the vocabulary once a second envelope needed the identical check
+    (constitution rule 22 / D3); the callers still own which
+    collections exist and what their element types are.
+    """
+    checks: list[CheckTuple] = [
+        (isinstance(value, tuple), field_name, value),
+    ]
+    if isinstance(value, tuple):
+        for index, element in enumerate(value):
+            checks.append(
+                (
+                    isinstance(element, element_type),
+                    f"{field_name}[{index}]",
+                    element,
+                )
+            )
+    return tuple(checks)
+
+
 class _Validated:
     """
     Mix-in providing validation helpers for frozen dataclasses.

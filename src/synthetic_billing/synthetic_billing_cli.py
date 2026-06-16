@@ -7,7 +7,9 @@ This is a thin command-line wrapper (D35) over the end-to-end path:
     -> build_population       # consumes RNG draws for the starter
                               # population
     -> run_monthly_simulation # consumes further RNG draws for monthly
-                              # cancellation selection (D40)
+                              # cancellation selection (D40), and bills
+                              # every month against the post-transition
+                              # state (D46) — billing consumes no draws
     -> emit_raw_files         # serializes final state + ordered
                               # lifecycle events
 
@@ -17,9 +19,12 @@ across the full run.
 
 The CLI orchestrates existing functions only.  It does not build the
 population or emit files itself, does not implement transitions
-other than cancellation, does not create invoices / payments / usage,
-computes no analytics, and loads no database.  It is a demo runner,
-not an application framework.
+other than cancellation, computes no analytics, and loads no database.
+The simulation run now generates recurring invoices and invoice lines
+in memory (D46), but this slice does not emit invoice files and the
+CLI's printed summary is unchanged: it reports the raw artifacts and
+lifecycle-event counts only.  It is a demo runner, not an application
+framework.
 
 Default paths are intentionally boring and interpreted relative to the
 current working directory:
@@ -113,7 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     catalog = build_default_catalog()
     rng = RandomStream(config.seed)
     starter_state = build_population(config, catalog, rng)
-    sim_result = run_monthly_simulation(starter_state, config, rng)
+    sim_result = run_monthly_simulation(starter_state, config, rng, catalog)
     emit_result = emit_raw_files(sim_result, output_dir)
 
     print("Synthetic subscriber billing demo complete.")

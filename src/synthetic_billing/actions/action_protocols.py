@@ -25,7 +25,12 @@ from __future__ import annotations
 import dataclasses
 from typing import ClassVar, Protocol
 
-from synthetic_billing._validation import CheckSpec, CheckTuple, _Validated
+from synthetic_billing._validation import (
+    CheckSpec,
+    CheckTuple,
+    _Validated,
+    collection_element_checks,
+)
 from synthetic_billing.contracts.event_contracts import LifecycleEvent
 from synthetic_billing.contracts.invoice_contracts import Invoice, InvoiceLine
 from synthetic_billing.simulate.simulation_state import SimulationState
@@ -68,68 +73,41 @@ class ActionResult(_Validated):
         ("invoice_lines", tuple),
     )
 
-    def _structural_checks(self) -> tuple[CheckTuple, ...]:
+    # ActionResult (per-action) and SimulationResult (per-run) are
+    # deliberately distinct types that happen to carry the same
+    # state-plus-billing-collections shape (D40 keeps them separate even
+    # when their fields coincide).  The per-element checking is shared
+    # vocabulary (``collection_element_checks``); the field declarations
+    # and this assembly are the irreducible residue of two intentionally
+    # separate envelopes, so the duplicate-code report on this validated
+    # shape is suppressed locally rather than collapsed into a shared
+    # base class that D40 rejects.
+    def _structural_checks(  # pylint: disable=duplicate-code
+        self,
+    ) -> tuple[CheckTuple, ...]:
         """Return structural validation checks for this action result.
 
-        Top-level field types are re-checked here so that
-        direct-construction instances (which bypass
-        :meth:`create_validated` and therefore the constructor type
-        checks) are reported as invalid rather than silently passing.
-
-        Per constitution rule 23, each output collection is checked
-        independently: when one collection is not a tuple at all,
-        only its per-element checks are skipped (iterating it would be
-        unsafe), while the other, correctly-typed collections still
-        surface their own per-element violations.
+        Re-checks ``state`` and validates each output collection with
+        independent, rule-23-safe per-element checks so a
+        directly-constructed (test-only) instance still reports its
+        violations.
         """
         checks: list[CheckTuple] = [
-            (
-                isinstance(self.state, SimulationState),
-                "state",
-                self.state,
-            ),
+            (isinstance(self.state, SimulationState), "state", self.state),
         ]
         checks.extend(
-            self._collection_checks(
+            collection_element_checks(
                 "lifecycle_events", self.lifecycle_events, LifecycleEvent,
             )
         )
         checks.extend(
-            self._collection_checks("invoices", self.invoices, Invoice)
+            collection_element_checks("invoices", self.invoices, Invoice)
         )
         checks.extend(
-            self._collection_checks(
+            collection_element_checks(
                 "invoice_lines", self.invoice_lines, InvoiceLine,
             )
         )
-        return tuple(checks)
-
-    @staticmethod
-    def _collection_checks(
-        field_name: str,
-        value: object,
-        element_type: type,
-    ) -> tuple[CheckTuple, ...]:
-        """Return the top-level and per-element checks for one collection.
-
-        The collection must be a tuple of *element_type* instances.
-        When ``value`` is not a tuple, only the top-level check is
-        returned: iterating a non-tuple is not a safely observable
-        check (rule 23), so per-element checks are skipped for this
-        collection without suppressing the others.
-        """
-        checks: list[CheckTuple] = [
-            (isinstance(value, tuple), field_name, value),
-        ]
-        if isinstance(value, tuple):
-            for index, element in enumerate(value):
-                checks.append(
-                    (
-                        isinstance(element, element_type),
-                        f"{field_name}[{index}]",
-                        element,
-                    )
-                )
         return tuple(checks)
 
 

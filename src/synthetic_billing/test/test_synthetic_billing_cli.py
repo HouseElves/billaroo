@@ -93,8 +93,9 @@ def _independent_counts(config_path: Path) -> tuple[int, int, int]:
     """
     config = load_scenario_config(config_path)
     rng = RandomStream(config.seed)
-    starter = build_population(config, build_default_catalog(), rng)
-    result = run_monthly_simulation(starter, config, rng)
+    catalog = build_default_catalog()
+    starter = build_population(config, catalog, rng)
+    result = run_monthly_simulation(starter, config, rng, catalog)
     return (
         len(result.state.accounts),
         len(result.state.subscribers),
@@ -250,8 +251,9 @@ def _independent_event_count(config_path: Path) -> int:
     """
     config = load_scenario_config(config_path)
     rng = RandomStream(config.seed)
-    state = build_population(config, build_default_catalog(), rng)
-    result = run_monthly_simulation(state, config, rng)
+    catalog = build_default_catalog()
+    state = build_population(config, catalog, rng)
+    result = run_monthly_simulation(state, config, rng, catalog)
     return len(result.lifecycle_events)
 
 

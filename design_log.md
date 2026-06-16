@@ -2476,3 +2476,187 @@ billing-specific branch added there.
   is decided.
 * Multiple invoices per account-month become possible, at which point
   the at-most-one-invoice result shape is revisited.
+
+### D46. Run-Level Recurring Billing Integration
+
+D45 made account-month invoice generation a one-action semantic chain
+but left it un-invoked: the monthly driver ran cancellation only, and
+no run produced or retained invoices.  This decision wires that
+accepted billing action into the full simulation run.  A completed
+:func:`run_monthly_simulation` now bills every configured month —
+including month 1 — against the post-transition state and returns the
+ordered invoices and invoice lines in a widened
+:class:`SimulationResult`.  It adds no billing rules of its own: the
+driver selects which account-months to bill and accumulates the
+results, while account lookup, the active-account rule, chargeability,
+catalog pricing, construction, total calculation, and line ordering all
+stay in :func:`build_account_month_invoice` (D44) reached through the
+D45 chain.
+
+#### Monthly Ordering: Lifecycle Before Billing
+
+The driver iterates ``simulation_month`` from ``1`` through
+``config.months`` inclusive.  For each month ``>= 2`` it first selects
+and applies cancellation transitions exactly as before (month-start
+intent selection, ordered chain application, D40), then bills the
+resulting state.  Billing therefore observes the month's
+post-transition effective-dated state, so a subscription that ends in
+month ``m`` — ``end_month == m`` with status ``ended`` — is not charged
+in month ``m``, consistent with the half-open ``[start_month,
+end_month)`` convention (D39).  Month 1 carries no post-starter
+transition but is billed: an account active in the starter population
+with a chargeable subscription in month 1 produces a month-1 invoice,
+and a one-month scenario bills month 1 even though no lifecycle
+transition occurs.
+
+#### Run-Level Billing Accumulation
+
+Within a month, the driver walks ``state.accounts`` in stable order and,
+for each account, builds a :class:`GenerateInvoiceIntent` and applies
+the D45 one-action chain through the existing
+:func:`apply_action_chain`.  A chargeable account-month contributes its
+single invoice and that invoice's ordered lines; a non-chargeable
+account-month (no subscribers, nothing chargeable this month, or a
+non-active account) contributes nothing.  The driver accumulates
+invoices and invoice lines into two run-level tuples, independently of
+the lifecycle-event accumulation, and constructs no billing records
+itself.
+
+The per-month billing walk lives in a private ``_bill_month`` helper and
+the per-month cancellation step in a private ``_apply_month_cancellations``
+helper, so the driver's top-level loop reads as "advance the month, then
+bill the month" and stays within the project's local-variable budget.
+Neither helper prices, mutates state, or consumes randomness; both
+delegate to the accepted boundaries.
+
+#### Deterministic Ordering
+
+The run-level invoices are month-major (the outer loop is ascending
+months), and within a month they follow ``state.accounts`` order (the
+billing walk is in account order).  Each invoice's lines preserve the
+order :func:`build_account_month_invoice` produced (D44), and every line
+carries the invoice id of an invoice returned by the same run.  Repeated
+runs with equivalent inputs produce equal ordered invoices and invoice
+lines, byte-for-byte under the project's determinism contract (D2).
+
+#### Preservation Of Cancellation Randomness
+
+Billing consumes no random draws and emits no lifecycle events, so
+adding it leaves the established cancellation draw sequence and event
+log unchanged.  Month-1 billing happens before the month-2..N loop
+begins, and within each later month billing runs only after that
+month's cancellation draws and applications complete; the shared
+:class:`RandomStream` therefore advances by exactly the active-subscriber
+count per month as before.  This is proven directly: for the same
+``(config, seed)`` the new driver's lifecycle-event log, final
+subscriber/subscription state, and final RNG position are identical to a
+billing-free reconstruction of the cancellation-only path.
+
+#### The Catalog Reaches The Driver Explicitly
+
+:func:`run_monthly_simulation` gains an explicit ``catalog`` parameter,
+threaded from the CLI alongside the existing scenario, RNG, and starter
+state.  The catalog is a construction-time dependency of the billing
+action (D45 captures it at chain build), so the driver passes it
+through to ``_bill_month`` and into each chain builder rather than
+reconstructing it or reaching for a default.  This keeps the explicit
+dependency convention (D33's explicit-RNG posture) and avoids hiding a
+``build_default_catalog`` call inside the driver.
+
+#### The Widened Simulation-Result Boundary
+
+:class:`SimulationResult` grows two fields, ``invoices`` and
+``invoice_lines``, after ``state`` and ``lifecycle_events``.  They are
+explicit, typed tuples — not a generic emitted-record container, record
+dictionary, or output registry — mirroring the D43 widening of
+:class:`ActionResult` and justified by the concrete billing records the
+run now produces (constitution rule 22).  Structural validation checks
+each collection independently and rule-23-safely.
+
+The per-element "tuple of *element_type*, rule-23-safe" check recurred
+across two result envelopes (:class:`ActionResult` from D43 and now
+:class:`SimulationResult`), so it was promoted into the shared
+validation vocabulary as ``collection_element_checks`` in
+``_validation.py`` (constitution rule 22 / D3): a second consumer needed
+the identical check, so the helper earned its place.  The two envelopes
+remain deliberately distinct types (D40) even though their fields now
+coincide; the residual duplicate-code report on their parallel field
+declarations and structural-check assembly — and on the parallel test
+suites that mirror them — is suppressed with a justified local
+``duplicate-code`` disable rather than collapsed into a shared base
+class, because D40 explicitly rejects merging the two envelopes.
+
+#### Scope Held
+
+This slice integrates run-level billing only.  It does not emit raw
+invoice or invoice-line CSV files, change the manifest, or change the
+CLI's printed summary; it adds no payments, taxes, fees, usage, credits,
+adjustments, proration, price-change behaviour, hidden truth, PostgreSQL
+loading, dbt models, or new lifecycle transitions; and it introduces no
+scheduler, registry, plugin system, or parallel-execution backend.  The
+CLI still emits exactly the five cancellation-era artifacts.  After this
+slice Billaroo's in-memory run produces recurring invoices and invoice
+lines, but invoice files are not emitted and the CLI output is
+unchanged.
+
+#### Required Invariants Demonstrated
+
+Tests at the driver boundary establish that every generated invoice
+names one account and one month; no account-month produces more than one
+invoice; every invoice line references an invoice returned by the run;
+every invoice total equals the exact ``Decimal`` sum of its returned
+lines; billing mutates no state beyond the already-supported
+cancellation actions and emits no lifecycle events; the cancellation
+events, final state, and RNG position are unchanged for the same
+scenario and seed; repeated runs produce equal ordered results; a
+one-month scenario bills month 1; and account-months with nothing
+chargeable produce no invoice.
+
+#### Alternatives Considered
+
+* *Bill inside the cancellation chain or behaviour model.*  Rejected:
+  billing is not a stochastic behaviour and not a lifecycle transition.
+  Selection of which account-months to bill is deterministic run
+  orchestration; folding it into cancellation selection would entangle
+  the billing horizon with the draw sequence and risk perturbing
+  determinism.
+* *Bill before applying the month's transitions.*  Rejected: the slice
+  requires billing to observe the post-transition state so a
+  same-month cancellation suppresses that month's charge.  Billing
+  first would charge a subscription in its cancellation month, breaking
+  the half-open interval semantics (D39).
+* *Give billing its own RandomStream or substream.*  Rejected:
+  billing consumes no randomness, so a stream would be dead weight and
+  predeclare structure no behaviour needs (rule 22).
+* *Move pricing/chargeability into the driver for speed.*  Rejected:
+  that would duplicate D44 rules across layers and violate the slice's
+  explicit boundary that billing logic stays in the billing model.
+* *Add a* ``RunBillingResult`` *wrapper or a generic emitted-record
+  bag on* :class:`SimulationResult`.  Rejected: two explicit typed
+  tuples match the D43 envelope precedent and predeclare no capability
+  the run does not produce.
+* *Collapse* :class:`ActionResult` *and* :class:`SimulationResult`
+  *into a shared validated base.*  Rejected: D40 keeps the per-action
+  and per-run envelopes distinct even when their fields coincide; the
+  shared per-element check is extracted instead, and the irreducible
+  structural parallelism is suppressed locally.
+
+#### Revisit When
+
+* Raw invoice and invoice-line emission, manifest entries, and CLI
+  billing evidence land (the next slice), at which point the in-memory
+  billing this slice produces becomes externally observable.
+* A second monthly transition (upgrade, downgrade, reactivation,
+  feature change) changes the effective-dated state billing observes,
+  at which point the lifecycle-before-billing ordering is re-confirmed
+  for the new transition.
+* Proration, taxes, fees, usage, credits, adjustments, or multiple
+  invoices per account-month enter scope and change how an
+  account-month maps to invoices, at which point the at-most-one-invoice
+  accumulation and the result shape are revisited.
+* Hidden truth or a run-level billing summary needs to ride on the
+  result envelope, at which point the new field is decided here rather
+  than added quietly.
+* Determinism requirements force per-stage RNG streams; the
+  seed-injection point is refined here while preserving the
+  billing-consumes-no-draws guarantee.

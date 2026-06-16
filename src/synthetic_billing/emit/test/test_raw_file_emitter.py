@@ -91,7 +91,7 @@ def _emit_state(state: SimulationState, output_dir) -> RawEmissionResult:
     :class:`TestRawEmissionLifecycleEvents` below.
     """
     return emit_raw_files(
-        SimulationResult.create_validated(state, ()),
+        SimulationResult.create_validated(state, (), (), ()),
         output_dir,
     )
 
@@ -383,7 +383,7 @@ def _result_with_events(
 ) -> SimulationResult:
     """Build a SimulationResult with the small state and given events."""
     return SimulationResult.create_validated(
-        _make_small_state(), tuple(events),
+        _make_small_state(), tuple(events), (), (),
     )
 
 

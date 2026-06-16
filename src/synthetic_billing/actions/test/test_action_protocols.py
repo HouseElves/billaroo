@@ -187,7 +187,14 @@ class TestActionResultTypeChecks:
 # ---------------------------------------------------------------------------
 
 
-class TestActionResultStructuralChecks:
+# ActionResult and SimulationResult are deliberately distinct envelope
+# types that share the same state-plus-billing-collections shape (D40),
+# so their structural-validation tests exercise the same per-collection
+# and direct-construction patterns.  The parallel test bodies are the
+# expected mirror of two intentionally-separate types, not copy-paste to
+# be collapsed; the duplicate-code report on them is suppressed at the
+# test-class scope rather than by merging the two suites.
+class TestActionResultStructuralChecks:  # pylint: disable=duplicate-code
     """Structural validation catches per-element and direct-construction errors."""
 
     def test_non_event_element_rejected(self) -> None:
