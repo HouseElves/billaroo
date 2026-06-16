@@ -2660,3 +2660,174 @@ chargeable produce no invoice.
 * Determinism requirements force per-stage RNG streams; the
   seed-injection point is refined here while preserving the
   billing-consumes-no-draws guarantee.
+
+### D47. Raw Invoice And Invoice-Line Emission
+
+D46 made the simulation run accumulate month-major invoices and ordered
+invoice lines into :class:`SimulationResult`, but the raw emitter still
+wrote only the four cancellation-era files plus the manifest.  This
+decision extends the raw operational emission path to serialize those
+billing records as two new files:
+
+```text
+invoices.csv
+invoice_lines.csv
+```
+
+The emitter serializes records that already exist in the result.  It
+computes no chargeability, no catalog pricing, no invoice construction,
+no total reconciliation, and runs no monthly billing — those stay in the
+billing model and the monthly driver (D44, D45, D46).  This slice is
+deterministic serialization of accepted records, nothing more.
+
+#### Raw Schemas
+
+``invoices.csv`` and ``invoice_lines.csv`` use explicit column tuples
+(``INVOICE_COLUMNS``, ``INVOICE_LINE_COLUMNS``) that mirror the
+:class:`Invoice` and :class:`InvoiceLine` contract field order exactly,
+declared explicitly rather than derived from the dataclasses so the raw
+schema is a deliberate, reviewable choice and not an accident of field
+ordering — consistent with the four existing schemas.  No derived,
+denormalized, or downstream-convenience columns are added: the raw files
+are operational extracts, not analytics tables (D8, D9).  Invoice
+columns are ``invoice_id, simulation_month, account_id,
+billing_cycle_day, total_amount``; invoice-line columns are
+``invoice_line_id, invoice_id, subscriber_id, subscription_id,
+item_type, item_code, line_amount``.
+
+#### Declared Grain
+
+Recorded at the constants (rule 15): ``invoices.csv`` is one row per
+emitted account-month invoice, and ``invoice_lines.csv`` is one row per
+emitted recurring-charge invoice line.  These mirror the contract grains
+(D42) and the run-level ordering (D46); they are not reinterpreted as
+analytic aggregates.
+
+#### Row Ordering
+
+Rows preserve the order already established in the simulation result:
+invoices are month-major then in state account order, and invoice lines
+keep the per-account-month order the billing model produced (D44, D46).
+The emitter introduces no sort of its own; it iterates the result tuples
+in place, so the emitted order is identical to the in-memory order a
+reviewer can read off the result.
+
+#### Monetary Serialization
+
+Money is written by the existing generic CSV path, which renders each
+cents-quantized ``Decimal`` through ``str`` as exact decimal text (for
+example ``29.99``, ``0.00``, ``100.00``).  No value passes through
+binary floating point at any point (rule 13).  Because the amounts are
+already quantized to cents at the ``build_money`` boundary (D42), the
+text is stable across runs and platforms, which keeps emission
+byte-reproducible (D2).
+
+#### Manifest Inclusion
+
+The manifest writer is already generic over ``(filename,
+record_count)`` pairs, so the two billing files are added by extending
+the ordered pair list the emitter passes it; no manifest-writer logic
+changed.  The ``files`` array now lists all six data files in a fixed
+order — the four established files followed by ``invoices.csv`` then
+``invoice_lines.csv`` — each with its true written-row count.  The
+established four entries keep their order and counts.
+
+#### Empty-File Behaviour
+
+When ``result.invoices`` or ``result.invoice_lines`` is empty, the
+corresponding file is written as a header-only CSV (one header row, zero
+data rows) and its manifest count is ``0`` — the same contract the four
+existing files already honour for an empty collection.  A run with no
+chargeable account-months therefore still produces valid, well-formed
+billing files.
+
+#### Deterministic Overwrite
+
+Existing target files are overwritten deterministically; re-emitting an
+unchanged result reproduces byte-identical ``invoices.csv`` and
+``invoice_lines.csv``.  Emission never reads prior output, so a rerun is
+safe and idempotent.  The input result is not mutated.
+
+#### The Raw-Emission Summary
+
+:class:`RawEmissionResult` gains four fields — ``invoices_path``,
+``invoice_lines_path``, ``invoices_written``, ``invoice_lines_written``
+— placed alongside the existing path and count fields.  It remains a
+plain frozen dataclass (no ``_Validated`` vocabulary, D30): every field
+is produced by the emitter from trusted inputs.  The attribute count
+grows from ten to fourteen and stays under the existing local
+``too-many-instance-attributes`` suppression; a flat batch summary is
+clearer than nesting per-file sub-objects (rule 22).
+
+The ``emit_raw_files`` body was refactored from per-file straight-line
+statements into iteration over an ordered ``(filename, columns,
+records)`` spec table, which both fixes the manifest/emission order in
+one place and keeps the function within the project local-variable
+budget as the file count grew.  The per-file write helper, overwrite
+policy, and newline behaviour are unchanged.
+
+#### Public Honesty
+
+The README and the emission docstrings now state that invoice and
+invoice-line CSV emission exists.  They do *not* claim the CLI reports
+or validates the new files: the CLI summary is unchanged (it prints the
+established fields only), and expanded smoke-test assertions for public
+billing output are deferred to the next slice.  The five-artifact
+description from the cancellation era is replaced by the accurate
+seven-artifact description (six data files plus the manifest).
+
+#### Scope Held
+
+This slice adds no payment files; no taxes, fees, usage, credits,
+adjustments, or proration; no hidden truth; no PostgreSQL or dbt; no CLI
+summary changes beyond backward compatibility; no expanded smoke-test
+billing assertions; and no generic schema registry, plugin system, or
+serialization framework.  The four established files retain their
+schemas, ordering, and behaviour exactly.
+
+#### Alternatives Considered
+
+* *Derive columns from the dataclass fields.*  Rejected: the four
+  existing schemas are declared explicitly so the raw contract is a
+  deliberate choice; deriving billing columns would make the new
+  schemas inconsistent with the established ones and couple the raw
+  format to incidental field order.
+* *Add a denormalized convenience column (e.g. account_id on the line,
+  or a line count on the invoice).*  Rejected: raw files are
+  operational extracts; the dbt layer reconstructs joins and
+  aggregates (D9, D17).  The line already carries ``invoice_id`` for
+  association.
+* *Format money explicitly (quantize/format in the emitter).*
+  Rejected: the amounts are already cents-quantized ``Decimal`` values
+  (D42), and ``str(Decimal)`` is exact; an extra format step would
+  duplicate the money invariant outside the model and risk drift.
+* *Skip writing a file when its collection is empty.*  Rejected: the
+  established files always write a header-only file for an empty
+  collection, and downstream loaders expect a stable file set; a
+  conditionally-absent file would be a worse contract.
+* *Keep per-file straight-line statements in* ``emit_raw_files``.
+  Rejected: six files pushed the function over the local-variable
+  budget and triplicated the path/count/manifest plumbing; the ordered
+  spec table removes that duplication and centralizes the emission
+  order.
+* *Introduce a schema/format registry abstraction.*  Rejected: two
+  added files do not justify a framework (rule 22); the explicit spec
+  table is the smallest boring thing that works.
+
+#### Revisit When
+
+* The CLI gains billing evidence and the smoke test gains billing
+  assertions (the next slice), at which point the public surface that
+  reports and validates these files is decided.
+* Payment, usage, or hidden-truth artifacts enter scope, at which point
+  each gets its own filename, schema, and declared grain rather than
+  reusing these.
+* Invoice lines grow beyond recurring charges (taxes, fees, credits,
+  adjustments), at which point the invoice-line grain and schema are
+  revisited and a line-type column is considered.
+* A deterministic clock lands, at which point a manifest timestamp
+  field becomes a separate decision and the byte-reproducibility
+  guarantee is re-evaluated.
+* A second monetary or schema format consumer appears, at which point
+  promoting a shared schema/serialization helper is reconsidered under
+  rule 22.

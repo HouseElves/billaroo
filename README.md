@@ -10,9 +10,9 @@ The central claim: **if the truth is known, metric reconstruction can be tested.
 
 ## Current Status
 
-Runnable local pipeline. Billaroo deterministically builds a starter population, advances it through every configured simulation month, applies deterministic subscriber cancellations through explicit ordered semantic action chains, and generates recurring account-month invoices and invoice lines in memory for every month (including month 1), billing each month against its post-transition state. It emits the final account, subscriber, and subscription state alongside an ordered lifecycle-event log as raw operational CSV files plus a JSON manifest. A single `RandomStream` is seeded once and threaded through both stages, so the full set of emitted artifacts is byte-identical for a given `(scenario, seed, code version)`; billing consumes no random draws.
+Runnable local pipeline. Billaroo deterministically builds a starter population, advances it through every configured simulation month, applies deterministic subscriber cancellations through explicit ordered semantic action chains, and generates recurring account-month invoices and invoice lines for every month (including month 1), billing each month against its post-transition state. It emits the final account, subscriber, and subscription state, an ordered lifecycle-event log, and the ordered invoices and invoice lines as raw operational CSV files plus a JSON manifest. A single `RandomStream` is seeded once and threaded through both stages, so the full set of emitted artifacts is byte-identical for a given `(scenario, seed, code version)`; billing consumes no random draws.
 
-Cancellation is the only lifecycle transition currently implemented. Recurring billing now runs across the full simulation and the run result carries its ordered invoices and invoice lines, but those records are held in memory only: invoice and invoice-line files are not emitted, the manifest and CLI output are unchanged, and the rest of the downstream pipeline — payments, hidden truth, PostgreSQL load, dbt models, metric reconciliation — is not yet built.
+Cancellation is the only lifecycle transition currently implemented. Recurring billing runs across the full simulation, and its invoices and invoice lines are now emitted as raw `invoices.csv` and `invoice_lines.csv` files alongside the established artifacts, with manifest entries and record counts. The CLI's printed summary is unchanged and does not yet report or validate the billing files. The rest of the downstream pipeline — payments, hidden truth, PostgreSQL load, dbt models, metric reconciliation — is not yet built.
 
 Implemented today:
 
@@ -24,9 +24,9 @@ Implemented today:
 - `simulate/simulation_state.py` + `simulate/population_builder.py` — a deterministic starter-population builder (one account → one subscriber → one plan subscription, optionally one feature subscription, all in month 1)
 - `simulate/behavior_model.py` — deterministic cancellation selection: one draw per active subscriber per month, in stable subscriber order, against the month-start state
 - `simulate/month_driver.py` — monthly advancement through months 1..N, with month-start cancellation intent selection and ordered chain application for months 2..N, then per-month recurring billing of every account against the post-transition state (month-major, account-ordered); accumulates the run's ordered invoices and invoice lines
-- `simulate/simulation_result.py` — frozen, validated record carrying the final `SimulationState` and the ordered `subscriber_cancelled` event log
+- `simulate/simulation_result.py` — frozen, validated record carrying the final `SimulationState`, the ordered `subscriber_cancelled` event log, and the ordered invoices and invoice lines generated across the run
 - `actions/lifecycle_actions.py` + `actions/billing_actions.py` + `actions/action_chain.py` + `actions/action_protocols.py` — `CancelSubscriberIntent` and the two-action cancellation chain; `GenerateInvoiceIntent` and the one-action generate-invoice chain (which delegates to `build_account_month_invoice` and returns the invoice and lines through the `ActionResult` envelope); and the ordered chain applicator that accumulates lifecycle events, invoices, and invoice lines
-- `emit/raw_file_emitter.py` + `emit/manifest_emitter.py` — raw CSV emission for final-state accounts, subscribers, subscriptions, ordered lifecycle events, plus a JSON manifest with declared grain per emitted file (rule 15)
+- `emit/raw_file_emitter.py` + `emit/manifest_emitter.py` — raw CSV emission for final-state accounts, subscribers, subscriptions, ordered lifecycle events, and the ordered `invoices.csv` and `invoice_lines.csv` billing files, plus a JSON manifest with declared grain per emitted file (rule 15)
 - `synthetic_billing_cli.py` — a thin demo CLI wiring scenario load → catalog → population → monthly simulation → raw emission
 - `test/test_file_basename_uniqueness.py` — project-wide guard for rule 18
 - `configs/baseline_scenario.yaml` — minimal demo scenario (12 months, 20 starter accounts, `prob_cancel=0.04`)
@@ -35,7 +35,7 @@ Implemented today:
 Not yet implemented (and not faked or stubbed elsewhere in the tree):
 
 - monthly lifecycle transitions other than cancellation: upgrades, downgrades, reactivations, feature changes
-- billing behaviour beyond the in-memory run: raw invoice/invoice-line file emission, manifest entries for them, and CLI billing output (`build_account_month_invoice` computes one account-month invoice, the `GenerateInvoiceIntent` chain produces it as an action result, and the monthly run now invokes billing every month and accumulates the run's invoices and invoice lines — but those records stay in memory; no invoice or invoice-line files are emitted yet)
+- billing evidence on the public surface: CLI billing output and smoke-test billing assertions (`build_account_month_invoice` computes one account-month invoice, the `GenerateInvoiceIntent` chain produces it, the monthly run invokes billing every month and accumulates the run's invoices and invoice lines, and those records are now emitted as raw `invoices.csv` and `invoice_lines.csv` with manifest entries — but the CLI summary does not yet report them and the smoke test does not yet assert them)
 - payments, usage events, adjustments
 - a hidden-truth ledger
 - the PostgreSQL loader
@@ -59,7 +59,7 @@ The intended architecture is a billing analytics flight simulator. The simulator
 
 This is not a churn-modeling toy CSV. It is a billing analytics simulator built to send architectural signals: deterministic synthetic data generation, semantic action chains, declared grain on every emitted table, clean separation between simulation and downstream analytics, and known-answer validation.
 
-**Current capability versus planned architecture.** Today Billaroo runs the deterministic cancellation pipeline end to end and emits five total artifacts — four raw operational CSV extracts and one JSON manifest:
+**Current capability versus planned architecture.** Today Billaroo runs the deterministic cancellation pipeline end to end and emits seven total artifacts — six raw operational CSV extracts and one JSON manifest:
 
 ```text
 build/raw/
@@ -68,12 +68,15 @@ build/raw/
     subscriptions.csv       # one row per effective-dated Subscription
     lifecycle_events.csv    # one row per emitted subscriber_cancelled event,
                             # ordered month-major and by subscriber within month
+    invoices.csv            # one row per emitted account-month invoice,
+                            # month-major then in state account order
+    invoice_lines.csv       # one row per emitted recurring-charge invoice line
     manifest.json           # one entry per data file with its record count
 ```
 
 A cancelled subscriber appears in `subscribers.csv` as an inactive row that retains its last assigned `plan_code`; the plan and any feature subscriptions it held appear in `subscriptions.csv` with `end_month` set to the cancellation month and status `ended`. Subscribers active at the end of the run appear as active rows with open-ended subscriptions.
 
-The `Invoice` and `InvoiceLine` record contracts, their `build_invoice` / `build_invoice_line` builders, the pure model operation `build_account_month_invoice(...)`, and a `GenerateInvoiceIntent` semantic action exist, and the monthly simulation now invokes billing: every configured month (including month 1) is billed against its post-transition state, and the run result carries the ordered invoices and invoice lines accumulated across the horizon (month-major, then in state account order). Billing observes the effective-dated state, so a subscription that ends in a given month is not charged that month; it consumes no random draws, so the cancellation event log, final state, and seeded stream position are byte-identical to a billing-free run for the same `(scenario, seed, code version)`. These billing records are held **in memory only**: no invoice or invoice-line CSV files are emitted, the manifest and the CLI's printed summary are unchanged, and the five raw artifacts remain the cancellation-era set. The hidden truth ledger, payments, the PostgreSQL loader, the dbt reconstruction layer, the validation comparison, and all non-cancellation lifecycle transitions are **planned architecture, not current capability**. The roadmap is recorded honestly in the design log; nothing downstream of raw emission exists in the committed code yet.
+The `Invoice` and `InvoiceLine` record contracts, their `build_invoice` / `build_invoice_line` builders, the pure model operation `build_account_month_invoice(...)`, and a `GenerateInvoiceIntent` semantic action exist, and the monthly simulation invokes billing: every configured month (including month 1) is billed against its post-transition state, and the run result carries the ordered invoices and invoice lines accumulated across the horizon (month-major, then in state account order). Billing observes the effective-dated state, so a subscription that ends in a given month is not charged that month; it consumes no random draws, so the cancellation event log, final state, and seeded stream position are byte-identical to a billing-free run for the same `(scenario, seed, code version)`. Those billing records are now emitted as raw `invoices.csv` and `invoice_lines.csv` files, with manifest entries and record counts; monetary values serialize as exact decimal text, never through binary floating point. The CLI's printed summary is unchanged — it does not yet report or validate the billing files. The hidden truth ledger, payments, the PostgreSQL loader, the dbt reconstruction layer, the validation comparison, and all non-cancellation lifecycle transitions are **planned architecture, not current capability**. The roadmap is recorded honestly in the design log; nothing downstream of raw emission exists in the committed code yet.
 
 ## Quickstart
 
@@ -117,7 +120,7 @@ Lifecycle events file: build/raw/lifecycle_events.csv
 Manifest: build/raw/manifest.json
 ```
 
-The four lifecycle events are deterministic: the baseline scenario is `seed=42`, `months=12`, `starting_accounts=20`, `prob_cancel=0.04`, and the same `(config, seed, code version)` always produces the same five files, byte-for-byte. The Account and Subscriber tuple lengths do not change during the run — cancellation deactivates a subscriber and ends its subscriptions, but never removes rows.
+The four lifecycle events are deterministic: the baseline scenario is `seed=42`, `months=12`, `starting_accounts=20`, `prob_cancel=0.04`, and the same `(config, seed, code version)` always produces the same seven artifacts (six CSV files plus the JSON manifest), byte-for-byte. The Account and Subscriber tuple lengths do not change during the run — cancellation deactivates a subscriber and ends its subscriptions, but never removes rows.
 
 A single check-in script runs every committed quality gate — compileall, pytest, 100% branch coverage, pylint, and a CLI smoke test against a temporary directory. The smoke step verifies that `lifecycle_events.csv` contains at least one data row and that the manifest's reported count for that file agrees with the CSV row count. The smoke test never dirties `build/raw` or the working tree:
 
@@ -139,7 +142,7 @@ The design log also establishes precedent. Earlier decisions inform future decis
 
 Generated code must satisfy the project constitution. Review is separated into at least two concerns: whether the code is functionally correct, and whether it preserves the intended architecture. Constitutional adherence is neither an ad hoc process nor an informal preference. It is a documented and binding review target. When implementation pressure reveals an incomplete decision, the original decision is preserved and a refining decision is added. When generated code violates the constitution, the human architect either rejects the generation or records an explicit design-log amendment that changes the governing rule. The constitution does not bend silently. The history of the design is itself a versioned project artifact.
 
-This methodology has been applied to working systems with non-trivial architectural structure. Public demonstrations include the NYC Cab Experiment Platform, a medallion-style experiment pipeline built on open data engineering technologies under a 61-decision design log with strict data quality gates. The Billaroo synthetic data generator project refines the governance pattern developed during the NYC Cab Experiment and incorporates its practical lessons into a more formalized, repeatable process. Billaroo began with a governing 23-rule design constitution and has grown a 46-decision design log through its early stages.
+This methodology has been applied to working systems with non-trivial architectural structure. Public demonstrations include the NYC Cab Experiment Platform, a medallion-style experiment pipeline built on open data engineering technologies under a 61-decision design log with strict data quality gates. The Billaroo synthetic data generator project refines the governance pattern developed during the NYC Cab Experiment and incorporates its practical lessons into a more formalized, repeatable process. Billaroo began with a governing 23-rule design constitution and has grown a 47-decision design log through its early stages.
 
 Billaroo has two goals. The first is to deliver a tunable synthetic subscriber billing data generator. The second is to demonstrate a reliable AI-first methodology that controls AI-generated scope creep. The resulting methods are intended to be portable across project types. The specific technologies may change, but the core pattern remains stable: durable design constraints, explicit decision history, separated model responsibilities, adversarial review, executable validation, and human ownership of architecture and acceptance.
 

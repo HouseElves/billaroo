@@ -20,6 +20,10 @@ from synthetic_billing.contracts.event_contracts import (
 from synthetic_billing.emit.manifest_emitter import MANIFEST_FILENAME
 from synthetic_billing.emit.raw_file_emitter import (
     ACCOUNTS_FILENAME,
+    INVOICE_COLUMNS,
+    INVOICE_LINE_COLUMNS,
+    INVOICE_LINES_FILENAME,
+    INVOICES_FILENAME,
     LIFECYCLE_EVENT_COLUMNS,
     LIFECYCLE_EVENTS_FILENAME,
     SUBSCRIBERS_FILENAME,
@@ -27,7 +31,12 @@ from synthetic_billing.emit.raw_file_emitter import (
     RawEmissionResult,
     emit_raw_files,
 )
+from synthetic_billing.contracts.subscription_contracts import PLAN_ITEM_TYPE
 from synthetic_billing.model.account_model import build_account
+from synthetic_billing.model.billing_model import (
+    build_invoice,
+    build_invoice_line,
+)
 from synthetic_billing.model.catalog_model import build_default_catalog
 from synthetic_billing.model.subscriber_model import build_subscriber
 from synthetic_billing.model.subscription_model import (
@@ -251,6 +260,8 @@ class TestRawEmissionManifest:
             SUBSCRIBERS_FILENAME: 2,
             SUBSCRIPTIONS_FILENAME: 3,
             LIFECYCLE_EVENTS_FILENAME: 0,
+            INVOICES_FILENAME: 0,
+            INVOICE_LINES_FILENAME: 0,
         }
 
     def test_manifest_counts_match_data_rows(self, tmp_path) -> None:
@@ -445,8 +456,8 @@ class TestRawEmissionLifecycleEvents:
         }
         assert names_to_counts[LIFECYCLE_EVENTS_FILENAME] == len(events)
 
-    def test_manifest_lists_all_four_data_files(self, tmp_path) -> None:
-        """All four data files appear in the manifest in declared order."""
+    def test_manifest_lists_all_data_files(self, tmp_path) -> None:
+        """All six data files appear in the manifest in declared order."""
         emit_raw_files(_result_with_events(), tmp_path)
         manifest = json.loads(
             (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
@@ -457,6 +468,8 @@ class TestRawEmissionLifecycleEvents:
             SUBSCRIBERS_FILENAME,
             SUBSCRIPTIONS_FILENAME,
             LIFECYCLE_EVENTS_FILENAME,
+            INVOICES_FILENAME,
+            INVOICE_LINES_FILENAME,
         ]
 
     def test_result_carries_lifecycle_events_path_and_count(
@@ -481,3 +494,181 @@ class TestRawEmissionLifecycleEvents:
         emit_raw_files(_result_with_events(*events), tmp_path)
         second = (tmp_path / LIFECYCLE_EVENTS_FILENAME).read_bytes()
         assert first == second
+
+
+# ---- invoice and invoice-line emission (D47) ----
+
+def _make_billing_result(with_records: bool = True) -> SimulationResult:
+    """Build a SimulationResult carrying ordered invoices and lines.
+
+    Two account-month invoices are built deterministically, the first
+    with two lines and the second with one, so ordering, per-line
+    association, and money serialization are all exercised.  When
+    *with_records* is False the billing collections are empty (the
+    header-only case).
+    """
+    state = _make_small_state()
+    if not with_records:
+        return SimulationResult.create_validated(state, (), (), ())
+    inv_a = build_invoice("acct-alpha", 1, 15, "29.99")
+    inv_b = build_invoice("acct-bravo", 2, 8, "100.00")
+    line_a1 = build_invoice_line(
+        inv_a.invoice_id, "sub-a", "pls-a1", PLAN_ITEM_TYPE, "BASIC", "19.99",
+    )
+    line_a2 = build_invoice_line(
+        inv_a.invoice_id, "sub-a", "pls-a2", PLAN_ITEM_TYPE, "CLOUD_DVR", "10.00",
+    )
+    line_b1 = build_invoice_line(
+        inv_b.invoice_id, "sub-b", "pls-b1", PLAN_ITEM_TYPE, "PREMIUM", "100.00",
+    )
+    return SimulationResult.create_validated(
+        state,
+        (),
+        (inv_a, inv_b),
+        (line_a1, line_a2, line_b1),
+    )
+
+
+class TestRawEmissionInvoices:
+    """invoices.csv and invoice_lines.csv are written from the result (D47)."""
+
+    def test_billing_files_created(self, tmp_path) -> None:
+        """Both billing CSVs are created even when collections are empty."""
+        emit_raw_files(_make_billing_result(with_records=False), tmp_path)
+        assert (tmp_path / INVOICES_FILENAME).exists()
+        assert (tmp_path / INVOICE_LINES_FILENAME).exists()
+
+    def test_invoice_header_is_exact(self, tmp_path) -> None:
+        """The invoices header matches Invoice field order exactly."""
+        emit_raw_files(_make_billing_result(), tmp_path)
+        rows = _read_rows(tmp_path / INVOICES_FILENAME)
+        assert tuple(rows[0]) == INVOICE_COLUMNS
+        # Pin the leading and trailing columns so a silent reordering of
+        # INVOICE_COLUMNS itself would still be caught.
+        assert rows[0][0] == "invoice_id"
+        assert rows[0][-1] == "total_amount"
+
+    def test_invoice_line_header_is_exact(self, tmp_path) -> None:
+        """The invoice_lines header matches InvoiceLine field order exactly."""
+        emit_raw_files(_make_billing_result(), tmp_path)
+        rows = _read_rows(tmp_path / INVOICE_LINES_FILENAME)
+        assert tuple(rows[0]) == INVOICE_LINE_COLUMNS
+        # Pin the leading and trailing columns so a silent reordering of
+        # INVOICE_LINE_COLUMNS itself would still be caught.
+        assert rows[0][0] == "invoice_line_id"
+        assert rows[0][-1] == "line_amount"
+
+    def test_invoice_rows_match_result_order(self, tmp_path) -> None:
+        """Invoice data rows mirror result.invoices in declared order."""
+        result = _make_billing_result()
+        emit_raw_files(result, tmp_path)
+        rows = _read_rows(tmp_path / INVOICES_FILENAME)[1:]
+        expected = [
+            [
+                inv.invoice_id,
+                str(inv.simulation_month),
+                inv.account_id,
+                str(inv.billing_cycle_day),
+                str(inv.total_amount),
+            ]
+            for inv in result.invoices
+        ]
+        assert rows == expected
+
+    def test_invoice_line_rows_match_result_order(self, tmp_path) -> None:
+        """Invoice-line data rows mirror result.invoice_lines in order."""
+        result = _make_billing_result()
+        emit_raw_files(result, tmp_path)
+        rows = _read_rows(tmp_path / INVOICE_LINES_FILENAME)[1:]
+        expected = [
+            [
+                line.invoice_line_id,
+                line.invoice_id,
+                line.subscriber_id,
+                line.subscription_id,
+                line.item_type,
+                line.item_code,
+                str(line.line_amount),
+            ]
+            for line in result.invoice_lines
+        ]
+        assert rows == expected
+
+    def test_every_line_names_an_emitted_invoice(self, tmp_path) -> None:
+        """Each emitted line's invoice_id appears in the invoices file."""
+        emit_raw_files(_make_billing_result(), tmp_path)
+        invoice_ids = {
+            row[0] for row in _read_rows(tmp_path / INVOICES_FILENAME)[1:]
+        }
+        line_rows = _read_rows(tmp_path / INVOICE_LINES_FILENAME)[1:]
+        assert all(row[1] in invoice_ids for row in line_rows)
+
+    def test_money_text_is_exact_decimal(self, tmp_path) -> None:
+        """Monetary fields serialize as exact decimal text, not floats."""
+        emit_raw_files(_make_billing_result(), tmp_path)
+        invoice_rows = _read_rows(tmp_path / INVOICES_FILENAME)[1:]
+        totals = [row[4] for row in invoice_rows]
+        assert totals == ["29.99", "100.00"]
+        line_rows = _read_rows(tmp_path / INVOICE_LINES_FILENAME)[1:]
+        amounts = [row[6] for row in line_rows]
+        assert amounts == ["19.99", "10.00", "100.00"]
+
+    def test_empty_invoices_writes_header_only(self, tmp_path) -> None:
+        """Empty billing collections write header-only files."""
+        emit_raw_files(_make_billing_result(with_records=False), tmp_path)
+        assert _read_rows(tmp_path / INVOICES_FILENAME) == [
+            list(INVOICE_COLUMNS)
+        ]
+        assert _read_rows(tmp_path / INVOICE_LINES_FILENAME) == [
+            list(INVOICE_LINE_COLUMNS)
+        ]
+
+    def test_manifest_includes_billing_files_with_counts(
+        self, tmp_path,
+    ) -> None:
+        """The manifest lists both billing files with correct counts."""
+        emit_raw_files(_make_billing_result(), tmp_path)
+        manifest = json.loads(
+            (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+        counts = {
+            entry["name"]: entry["record_count"]
+            for entry in manifest["files"]
+        }
+        assert counts[INVOICES_FILENAME] == 2
+        assert counts[INVOICE_LINES_FILENAME] == 3
+
+    def test_result_carries_billing_paths_and_counts(self, tmp_path) -> None:
+        """RawEmissionResult exposes the new billing paths and counts."""
+        result = emit_raw_files(_make_billing_result(), tmp_path)
+        assert result.invoices_path == tmp_path / INVOICES_FILENAME
+        assert result.invoice_lines_path == tmp_path / INVOICE_LINES_FILENAME
+        assert result.invoices_written == 2
+        assert result.invoice_lines_written == 3
+
+    def test_rerun_byte_identical(self, tmp_path) -> None:
+        """Two emissions of the same result produce byte-identical files."""
+        result = _make_billing_result()
+        emit_raw_files(result, tmp_path)
+        first_inv = (tmp_path / INVOICES_FILENAME).read_bytes()
+        first_lines = (tmp_path / INVOICE_LINES_FILENAME).read_bytes()
+        emit_raw_files(result, tmp_path)
+        assert (tmp_path / INVOICES_FILENAME).read_bytes() == first_inv
+        assert (tmp_path / INVOICE_LINES_FILENAME).read_bytes() == first_lines
+
+    def test_result_not_mutated(self, tmp_path) -> None:
+        """Emission does not mutate the input result's billing tuples."""
+        result = _make_billing_result()
+        before_invoices = result.invoices
+        before_lines = result.invoice_lines
+        emit_raw_files(result, tmp_path)
+        assert result.invoices == before_invoices
+        assert result.invoice_lines == before_lines
+
+    def test_billing_files_use_unix_newlines(self, tmp_path) -> None:
+        """Billing CSVs use Unix newlines, not CRLF."""
+        emit_raw_files(_make_billing_result(), tmp_path)
+        for name in (INVOICES_FILENAME, INVOICE_LINES_FILENAME):
+            raw = (tmp_path / name).read_bytes()
+            assert b"\r\n" not in raw
+            assert b"\n" in raw

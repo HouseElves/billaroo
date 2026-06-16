@@ -36,10 +36,13 @@ MANIFEST_FILENAME: str = "manifest.json"
 # - manifest.json: one manifest document per raw emission batch.
 # - Within the manifest's ``files`` array: one entry per emitted raw
 #   data file (accounts.csv, subscribers.csv, subscriptions.csv,
-#   lifecycle_events.csv).
+#   lifecycle_events.csv, invoices.csv, invoice_lines.csv).
 #
 # A new emission batch overwrites the prior manifest deterministically;
-# the manifest never accumulates entries across batches.
+# the manifest never accumulates entries across batches.  This writer
+# is generic over the ``(filename, record_count)`` pairs it is given,
+# so adding the billing files (D47) is a caller concern, not a change
+# here.
 
 
 def build_manifest(files: Sequence[tuple[str, int]]) -> dict:

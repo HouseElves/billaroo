@@ -16,8 +16,9 @@ runnable today; stages 2 through 4 are planned architecture.
 The CLI builds the deterministic starter population, advances it
 through every configured simulation month, applies deterministic
 subscriber cancellations through the ordered semantic action chain,
-and emits five total artifacts under the output directory — four
-raw operational CSV extracts and one JSON manifest:
+bills every month (including month 1) against the post-transition
+state, and emits seven total artifacts under the output directory —
+six raw operational CSV extracts and one JSON manifest:
 
 .. code-block:: text
 
@@ -25,12 +26,15 @@ raw operational CSV extracts and one JSON manifest:
     subscribers.csv       # one row per Subscriber in the final state
     subscriptions.csv     # one row per effective-dated Subscription
     lifecycle_events.csv  # ordered subscriber_cancelled events
+    invoices.csv          # one row per emitted account-month invoice
+    invoice_lines.csv     # one row per emitted recurring-charge line
     manifest.json         # one entry per data file with its record count
 
 A single seeded ``RandomStream`` is threaded through both starter-
 population construction and monthly simulation, so the same
 ``(scenario, seed, code version)`` always produces byte-identical
-artifacts.
+artifacts; billing consumes no random draws.  The CLI's printed
+summary does not yet report or validate the billing files.
 
 2. Load Raw Data Into PostgreSQL  (planned)
 -------------------------------------------
